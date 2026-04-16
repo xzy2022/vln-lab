@@ -1,0 +1,12 @@
+[submodule "third_party/SAME"]
+	path = third_party/SAME
+	url = https://github.com/GengzeZhou/SAME.git
+[submodule "third_party/VLN-DUET"]
+	path = third_party/VLN-DUET
+	url = https://github.com/cshizhe/VLN-DUET.git
+[submodule "third_party/navnuances"]
+	path = third_party/navnuances
+	url = https://github.com/zehao-wang/navnuances.git
+[submodule "third_party/Matterport3DSimulator"]
+	path = third_party/Matterport3DSimulator
+	url = https://github.com/peteanderson80/Matterport3DSimulator.git
