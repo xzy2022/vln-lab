@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+
+# Env
+.env
+.venv/
+venv/
+conda-meta/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Large data
+data/shared/matterport_scans/
+data/shared/connectivity/
+data/shared/features/
+data/shared/pretrained/
+data/shared/checkpoints/
+
+data/same/
+data/duet/
+data/navnuances/
+data/**
+!data/
+!data/.gitkeep
+!data/数据说明.md
+!data/same/
+!data/same/.gitkeep
+
+# Runs / outputs
+runs/
+reports/error_logs/*.txt
+reports/error_logs/*.log
+
+# Checkpoints / model files
+*.pt
+*.pth
+*.ckpt
+*.bin
+
+# Local caches
+.cache/
+pytest_cache/
+
+# Jupyter
+.ipynb_checkpoints/

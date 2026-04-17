@@ -1,0 +1,17 @@
+h5py
+lmdb
+timm
+numpy
+neptune          # for logging, optional
+shapely
+msgpack
+networkx
+jsonlines
+omegaconf
+tensorboard
+transformers==4.57.1
+tqdm
+
+# 推荐手动安装以指定cuda版本
+# torch==2.7.0
+# torchvision==0.22.0
