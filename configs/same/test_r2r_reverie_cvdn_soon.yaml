@@ -1,0 +1,37 @@
+experiment:
+  id: "test-r2r-reverie-cvdn-soon"
+  test: true
+  data_dir: "../../../data/same"
+  resume_file: "../../../data/same/ckpt/SAME.pt"
+
+training:
+  val_batch_size: 4
+  workers: 2
+
+model:
+  moe_position: "Attn_q"
+  pretrained_ckpt: "../../../data/same/pretrain/Attnq_pretrained_ckpt.pt"
+  task_routing_feature: "multi"
+
+simulator:
+  connectivity_dir:
+    "mattersim": "../../../data/same/simulator/connectivity/"
+  candidate_file_dir:
+    "mattersim": "../../../data/same/simulator/mp3d_scanvp_candidates.json"
+  node_location_dir:
+    "mattersim": "../../../data/same/simulator/mp3d_connectivity_graphs.json"
+
+task:
+  source: ["R2R", "REVERIE", "CVDN", "SOON"]
+  val_source: ["R2R", "REVERIE", "CVDN", "SOON"]
+  test_source: ["R2R", "REVERIE", "CVDN", "SOON"]
+  train_simulation_env:
+    "R2R": "mattersim"
+    "REVERIE": "mattersim"
+    "CVDN": "mattersim"
+    "SOON": "mattersim"
+  eval_simulation_env:
+    "R2R": "mattersim"
+    "REVERIE": "mattersim"
+    "CVDN": "mattersim"
+    "SOON": "mattersim"
