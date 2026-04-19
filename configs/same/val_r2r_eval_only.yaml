@@ -1,0 +1,38 @@
+experiment:
+  id: "val-r2r-eval-only"
+  # This config is intended to verify the eval_only patch.
+  # It should run R2R validation only and exit before any training starts.
+  test: false
+  eval_only: true
+  max_saved_ckpts: 0
+  save_latest_states: false
+  data_dir: "../../../data/same"
+  resume_file: "../../../data/same/ckpt/SAME.pt"
+
+training:
+  # Kept small for a lightweight patch validation run.
+  val_batch_size: 4
+  workers: 2
+
+model:
+  moe_position: "Attn_q"
+  pretrained_ckpt: "../../../data/same/pretrain/Attnq_pretrained_ckpt.pt"
+  task_routing_feature: "multi"
+
+simulator:
+  connectivity_dir:
+    "mattersim": "../../../data/same/simulator/connectivity/"
+  candidate_file_dir:
+    "mattersim": "../../../data/same/simulator/mp3d_scanvp_candidates.json"
+  node_location_dir:
+    "mattersim": "../../../data/same/simulator/mp3d_connectivity_graphs.json"
+
+task:
+  # Restrict the run to a single benchmark so we can verify the patch quickly.
+  source: ["R2R"]
+  val_source: ["R2R"]
+  test_source: ["R2R"]
+  train_simulation_env:
+    "R2R": "mattersim"
+  eval_simulation_env:
+    "R2R": "mattersim"
