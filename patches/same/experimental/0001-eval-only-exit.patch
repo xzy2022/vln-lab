@@ -1,0 +1,37 @@
+diff --git a/src/configs/default.yaml b/src/configs/default.yaml
+index ecae8d2..33e93b4 100644
+--- a/src/configs/default.yaml
++++ b/src/configs/default.yaml
+@@ -6,6 +6,7 @@ experiment:
+   seed: 0                      # Random seed for reproducibility
+   max_saved_ckpts: 1           # Maximum number of saved checkpoints
+   eval_first: false            # Evaluate before training
++  eval_only: false             # Run validation only and exit without training
+   debug: false                 # Debug mode
+   test: false                  # Test mode
+   submit: false                # Submission mode
+diff --git a/src/run.py b/src/run.py
+index 9ad2a1d..a8b1eac 100644
+--- a/src/run.py
++++ b/src/run.py
+@@ -112,7 +112,8 @@ def main():
+     environments = create_environments(config, logger)
+
+     # Create train and validation data loaders
+-    if not config.experiment.test:
++    # Eval-only mode should not construct training dataloaders.
++    if not config.experiment.test and not config.experiment.eval_only:
+         train_dataloaders = create_dataloaders(
+             config, logger, environments,
+             training=True, device=device_id
+@@ -158,6 +159,10 @@ def main():
+
+     if config.experiment.test:
+         trainer.test()
++    elif config.experiment.eval_only:
++        # Run one validation pass and exit cleanly without entering trainer.train().
++        trainer.val_one_epoch(epoch=0)
++        return
+     else:
+         if config.experiment.eval_first:
+             trainer.val_one_epoch(epoch=0)
