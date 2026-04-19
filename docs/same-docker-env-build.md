@@ -133,8 +133,8 @@ python run.py --config_dir "$REPO_DIR"/configs/same/test_r2r_reverie_cvdn_soon.y
 
 REPO_DIR="/workspace/vln-lab"
 
-# 应用 0001-eval-only-exit patch 允许程序在评估完成后直接退出,不进入训练阶段
-git -C third_party/SAME apply ../../patches/same/experimental/0001-eval-only-exit.patch
+# 应用 SAME 的 base patches，当前包含 0001-eval-only-exit.patch 允许程序在评估完成后直接退出,不进入训练阶段
+bash "$REPO_DIR"/scripts/setup/apply_patches.sh --method same
 
 cd "$REPO_DIR"/third_party/SAME/src
 
