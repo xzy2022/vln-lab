@@ -133,8 +133,16 @@ python run.py --config_dir "$REPO_DIR"/configs/same/test_r2r_reverie_cvdn_soon.y
 
 REPO_DIR="/workspace/vln-lab"
 
+# 应用 0001-eval-only-exit patch 允许程序在评估完成后直接退出,不进入训练阶段
+git -C third_party/SAME apply ../../patches/same/experimental/0001-eval-only-exit.patch
+
 cd "$REPO_DIR"/third_party/SAME/src
+
+# 四个数据集的推理
 python run.py --config_dir "$REPO_DIR"/configs/same/val_r2r_reverie_cvdn_soon.yaml
+
+# 只在 R2R 数据集推理
+python run.py --config_dir "$REPO_DIR"/configs/same/val_r2r_eval_only.yaml
 
 ```
 
