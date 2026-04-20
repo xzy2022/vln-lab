@@ -1,0 +1,24 @@
+source,method,dataset,split,metric,value,note
+paper,SAME,CVDN,val,GP,6.94,Table 4
+paper,SAME,CVDN,test,GP,7.07,Table 4
+paper,SAME,RxR-EN,val_unseen,SR,50.5,Table 4
+paper,SAME,RxR-EN,val_unseen,nDTW,51.2,Table 4
+paper,SAME,R2R,val_unseen,SR,76,Table 4
+paper,SAME,R2R,val_unseen,SPL,66,Table 4
+paper,SAME,R2R,test_unseen,SR,74,Table 4
+paper,SAME,R2R,test_unseen,SPL,64,Table 4
+paper,SAME,SOON,val_unseen,SR,36.1,Table 4
+paper,SAME,SOON,val_unseen,SPL,25.4,Table 4
+paper,SAME,SOON,test_unseen,SR,38.2,Table 4
+paper,SAME,SOON,test_unseen,SPL,27.1,Table 4
+paper,SAME,REVERIE,val_unseen,SR,46.4,Table 4
+paper,SAME,REVERIE,val_unseen,SPL,36.1,Table 4
+paper,SAME,REVERIE,test_unseen,SR,48.6,Table 4
+paper,SAME,REVERIE,test_unseen,SPL,37.1,Table 4
+paper,SAME,OBJECTNAV-MP3D,val,SR,76.3,Table 4
+paper,SAME,OBJECTNAV-MP3D,val,SPL,42.7,Table 4
+paper,SAME,R2R-CE,val_unseen,NE,5.31,Table 5 (continuous environment, zero-shot)
+paper,SAME,R2R-CE,val_unseen,SR,47,Table 5 (continuous environment, zero-shot)
+paper,SAME,R2R-CE,val_unseen,SPL,38,Table 5 (continuous environment, zero-shot)
+paper,SAME,MP3D,val,SR,43,Table 5 (continuous environment, zero-shot)
+paper,SAME,MP3D,val,SPL,21,Table 5 (continuous environment, zero-shot)
