@@ -35,7 +35,7 @@ python scripts/experiments/run_same.py \
 一次成功运行后，结果会直接写到：
 
 ```text
-experiments/<experiment_id>/
+experiment_outputs/<experiment_id>/
 ```
 
 其中包含：

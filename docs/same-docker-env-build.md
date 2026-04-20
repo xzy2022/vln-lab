@@ -146,7 +146,7 @@ python run.py --config_dir "$REPO_DIR"/configs/same/val_r2r_eval_only.yaml
 
 ```
 
-如果你想让实验结果自动归档到 `experiments/` 并更新长期报表，推荐直接使用父项目入口：
+如果你想让实验结果自动归档到 `experiment_outputs/` 并更新长期报表，推荐直接使用父项目入口：
 
 ```bash
 cd /workspace/vln-lab
