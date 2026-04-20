@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import codecs
 import csv
 import datetime as dt
 import json
@@ -31,6 +32,23 @@ RUNS_CSV = REPORT_TABLES_DIR / "runs.csv"
 METRICS_LONG_CSV = REPORT_TABLES_DIR / "metrics_long.csv"
 OFFICIAL_RESULTS_CSV = REPORT_TABLES_DIR / "official_results.csv"
 
+RUNS_LEGACY_HEADER = [
+    "experiment_id",
+    "date",
+    "run_type",
+    "method",
+    "datasets",
+    "splits",
+    "repo_commit",
+    "child_repo_commit",
+    "config",
+    "checkpoint",
+    "seed",
+    "status",
+    "log_path",
+    "output_dir",
+    "patch_set",
+]
 RUNS_HEADER = [
     "experiment_id",
     "date",
@@ -44,6 +62,7 @@ RUNS_HEADER = [
     "checkpoint",
     "seed",
     "status",
+    "duration_hms",
     "log_path",
     "output_dir",
     "patch_set",
@@ -249,6 +268,14 @@ def read_csv_rows(path: Path) -> tuple[list[str] | None, list[dict[str, str]]]:
         return reader.fieldnames, list(reader)
 
 
+def write_csv_rows(path: Path, header: list[str], rows: list[dict[str, Any]]) -> None:
+    ensure_parent(path)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=header)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def ensure_csv_header(path: Path, header: list[str]) -> None:
     ensure_parent(path)
     fieldnames, _rows = read_csv_rows(path)
@@ -275,6 +302,30 @@ def append_csv_row(path: Path, header: list[str], row: dict[str, Any]) -> None:
     with path.open("a", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=header)
         writer.writerow(row)
+
+
+def format_duration_hms(duration_seconds: Any) -> str:
+    if duration_seconds in {None, ""}:
+        return ""
+    total_seconds = max(0, int(round(float(duration_seconds))))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+def ensure_runs_csv_duration_column() -> None:
+    fieldnames, rows = read_csv_rows(RUNS_CSV)
+    if fieldnames is None:
+        ensure_csv_header(RUNS_CSV, RUNS_HEADER)
+        return
+    if fieldnames != RUNS_LEGACY_HEADER and fieldnames != RUNS_HEADER:
+        raise ValueError(f"{repo_rel(RUNS_CSV)} 表头不匹配，期望 {RUNS_HEADER}，实际 {fieldnames}")
+
+    if fieldnames == RUNS_HEADER:
+        return
+
+    normalized_rows = [{key: row.get(key, "") for key in RUNS_HEADER} for row in rows]
+    write_csv_rows(RUNS_CSV, RUNS_HEADER, normalized_rows)
 
 
 def collect_existing_experiment_ids(experiments_dirs: Iterable[Path], runs_csv: Path) -> set[str]:
@@ -344,6 +395,72 @@ def collapse_progress_lines(lines: Iterable[str]) -> list[str]:
     if pending_progress is not None:
         collapsed.append(pending_progress)
     return collapsed
+
+
+def split_completed_output_lines(buffered_text: str) -> tuple[list[str], str]:
+    lines: list[str] = []
+    start = 0
+    index = 0
+    while index < len(buffered_text):
+        char = buffered_text[index]
+        if char == "\r":
+            if index + 1 < len(buffered_text) and buffered_text[index + 1] == "\n":
+                index += 1
+            lines.append(buffered_text[start : index + 1])
+            index += 1
+            start = index
+            continue
+        if char == "\n":
+            lines.append(buffered_text[start : index + 1])
+            index += 1
+            start = index
+            continue
+        index += 1
+    return lines, buffered_text[start:]
+
+
+def normalize_output_line_for_log(line: str) -> str:
+    if line.endswith("\r\n"):
+        return f"{line[:-2]}\n"
+    if line.endswith(("\r", "\n")):
+        return f"{line[:-1]}\n"
+    return line
+
+
+def write_output_line(
+    line: str,
+    *,
+    file_handle,
+    collapse_progress: bool,
+    pending_progress: str | None,
+) -> str | None:
+    normalized_line = normalize_output_line_for_log(line)
+    if collapse_progress and is_progress_line(normalized_line):
+        return normalized_line if normalized_line.endswith("\n") else f"{normalized_line}\n"
+    if pending_progress is not None:
+        file_handle.write(pending_progress)
+        pending_progress = None
+    file_handle.write(normalized_line)
+    return pending_progress
+
+
+def flush_output_buffer(
+    buffered_text: str,
+    *,
+    file_handle,
+    collapse_progress: bool,
+    pending_progress: str | None,
+) -> None:
+    if buffered_text:
+        pending_progress = write_output_line(
+            buffered_text,
+            file_handle=file_handle,
+            collapse_progress=collapse_progress,
+            pending_progress=pending_progress,
+        )
+    if pending_progress is not None:
+        file_handle.write(pending_progress)
+    file_handle.flush()
 
 
 def parse_metric_pairs(text: str) -> dict[str, float]:
@@ -799,30 +916,44 @@ def append_stderr_message(stderr_path: Path, message: str) -> None:
     print(f"[runner] {message}", file=sys.stderr)
 
 
-def stream_process(process: subprocess.Popen[str], stdout_path: Path, stderr_path: Path) -> int:
+def stream_process(process: subprocess.Popen[bytes], stdout_path: Path, stderr_path: Path) -> int:
     ensure_parent(stdout_path)
     ensure_parent(stderr_path)
     stdout_handle = stdout_path.open("a", encoding="utf-8")
     stderr_handle = stderr_path.open("a", encoding="utf-8")
 
     def forward(stream, file_handle, console, collapse_progress: bool) -> None:
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        buffered_text = ""
         pending_progress: str | None = None
         try:
-            for line in iter(stream.readline, ""):
-                console.write(line)
-                console.flush()
-                if collapse_progress and is_progress_line(line):
-                    pending_progress = line if line.endswith("\n") else f"{line}\n"
+            read_chunk = getattr(stream, "read1", stream.read)
+            while True:
+                chunk = read_chunk(4096)
+                if not chunk:
+                    break
+                text = decoder.decode(chunk)
+                if not text:
                     continue
-                if pending_progress is not None:
-                    file_handle.write(pending_progress)
+                console.write(text)
+                console.flush()
+                buffered_text += text
+                lines, buffered_text = split_completed_output_lines(buffered_text)
+                for line in lines:
+                    pending_progress = write_output_line(
+                        line,
+                        file_handle=file_handle,
+                        collapse_progress=collapse_progress,
+                        pending_progress=pending_progress,
+                    )
                     file_handle.flush()
-                    pending_progress = None
-                file_handle.write(line)
-                file_handle.flush()
-            if pending_progress is not None:
-                file_handle.write(pending_progress)
-                file_handle.flush()
+            buffered_text += decoder.decode(b"", final=True)
+            flush_output_buffer(
+                buffered_text,
+                file_handle=file_handle,
+                collapse_progress=collapse_progress,
+                pending_progress=pending_progress,
+            )
         finally:
             stream.close()
 
@@ -892,7 +1023,7 @@ def write_run_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def append_runs_row_if_missing(row: dict[str, Any]) -> None:
-    ensure_csv_header(RUNS_CSV, RUNS_HEADER)
+    ensure_runs_csv_duration_column()
     _fieldnames, rows = read_csv_rows(RUNS_CSV)
     existing = {current["experiment_id"] for current in rows}
     if row["experiment_id"] in existing:
@@ -965,6 +1096,8 @@ def main() -> int:
 
     user_overrides = build_user_overrides(args)
     config = load_same_config(config_path, user_overrides)
+
+    ensure_runs_csv_duration_column()
 
     existing_ids = collect_existing_experiment_ids(
         [EXPERIMENT_OUTPUTS_DIR, LEGACY_EXPERIMENTS_DIR],
@@ -1050,10 +1183,7 @@ def main() -> int:
             cwd=SAME_SRC_DIR,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            bufsize=1,
+            bufsize=0,
         )
         exit_code = stream_process(process, stdout_path, stderr_path)
         status = "success" if exit_code == 0 else "failed"
@@ -1096,7 +1226,7 @@ def main() -> int:
             ),
         )
 
-        ensure_csv_header(RUNS_CSV, RUNS_HEADER)
+        ensure_runs_csv_duration_column()
         ensure_csv_header(METRICS_LONG_CSV, METRICS_LONG_HEADER)
         runs_row = {
             "experiment_id": experiment_id,
@@ -1111,6 +1241,7 @@ def main() -> int:
             "checkpoint": get_in(config, "experiment", "resume_file") or "",
             "seed": get_in(config, "experiment", "seed"),
             "status": status,
+            "duration_hms": format_duration_hms((finished_at - started_at).total_seconds()),
             "log_path": repo_rel(stdout_path),
             "output_dir": repo_rel(experiment_dir),
             "patch_set": ";".join(patch_set),
