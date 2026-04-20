@@ -121,6 +121,27 @@ class RunSameTests(unittest.TestCase):
             finally:
                 run_same.METRICS_LONG_CSV = original_path
 
+    def test_collapse_progress_lines_keeps_only_last_line_per_segment(self) -> None:
+        lines = [
+            "Loading data:   0%|          | 0/500 [00:00<?, ?it/s]\n",
+            "Loading data:  42%|████▏     | 210/500 [00:00<00:00, 1234.00it/s]\n",
+            "Loading data: 100%|██████████| 500/500 [00:00<00:00, 4321.00it/s]\n",
+            "You are using a model of type bert to instantiate a model of type .\n",
+            "  0%|          | 0/376 [00:00<?, ?it/s]\n",
+            "100%|██████████| 376/376 [01:23<00:00,  4.52it/s]\n",
+            "[runner][2026-04-20 02:24:30+0000] official_results.csv 缺少参考项\n",
+        ]
+        collapsed = run_same.collapse_progress_lines(lines)
+        self.assertEqual(
+            collapsed,
+            [
+                "Loading data: 100%|██████████| 500/500 [00:00<00:00, 4321.00it/s]\n",
+                "You are using a model of type bert to instantiate a model of type .\n",
+                "100%|██████████| 376/376 [01:23<00:00,  4.52it/s]\n",
+                "[runner][2026-04-20 02:24:30+0000] official_results.csv 缺少参考项\n",
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
