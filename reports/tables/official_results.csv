@@ -1,24 +1,24 @@
-source,method,dataset,split,metric,value,note
-paper,SAME,CVDN,val,GP,6.94,Table 4
-paper,SAME,CVDN,test,GP,7.07,Table 4
-paper,SAME,RxR-EN,val_unseen,SR,50.5,Table 4
-paper,SAME,RxR-EN,val_unseen,nDTW,51.2,Table 4
-paper,SAME,R2R,val_unseen,SR,76,Table 4
-paper,SAME,R2R,val_unseen,SPL,66,Table 4
-paper,SAME,R2R,test_unseen,SR,74,Table 4
-paper,SAME,R2R,test_unseen,SPL,64,Table 4
-paper,SAME,SOON,val_unseen,SR,36.1,Table 4
-paper,SAME,SOON,val_unseen,SPL,25.4,Table 4
-paper,SAME,SOON,test_unseen,SR,38.2,Table 4
-paper,SAME,SOON,test_unseen,SPL,27.1,Table 4
-paper,SAME,REVERIE,val_unseen,SR,46.4,Table 4
-paper,SAME,REVERIE,val_unseen,SPL,36.1,Table 4
-paper,SAME,REVERIE,test_unseen,SR,48.6,Table 4
-paper,SAME,REVERIE,test_unseen,SPL,37.1,Table 4
-paper,SAME,OBJECTNAV-MP3D,val,SR,76.3,Table 4
-paper,SAME,OBJECTNAV-MP3D,val,SPL,42.7,Table 4
-paper,SAME,R2R-CE,val_unseen,NE,5.31,Table 5 (continuous environment, zero-shot)
-paper,SAME,R2R-CE,val_unseen,SR,47,Table 5 (continuous environment, zero-shot)
-paper,SAME,R2R-CE,val_unseen,SPL,38,Table 5 (continuous environment, zero-shot)
-paper,SAME,MP3D,val,SR,43,Table 5 (continuous environment, zero-shot)
-paper,SAME,MP3D,val,SPL,21,Table 5 (continuous environment, zero-shot)
+source,table,method,dataset,env,split,metric,metric_alias,value,unit,eval_protocol,note
+paper,Table 4,SAME,CVDN,discrete,val,GP,dist_to_end_reduction,6.94,m,,headline result
+paper,Table 4,SAME,CVDN,discrete,test,GP,dist_to_end_reduction,7.07,m,,headline result
+paper,Table 4,SAME,RxR-EN,discrete,val_unseen,SR,SR,50.5,pct,,headline result
+paper,Table 4,SAME,RxR-EN,discrete,val_unseen,nDTW,nDTW,51.2,pct,,headline result
+paper,Table 4,SAME,R2R,discrete,val_unseen,SR,SR,76,pct,,headline result
+paper,Table 4,SAME,R2R,discrete,val_unseen,SPL,SPL,66,pct,,headline result
+paper,Table 4,SAME,R2R,discrete,test_unseen,SR,SR,74,pct,,headline result
+paper,Table 4,SAME,R2R,discrete,test_unseen,SPL,SPL,64,pct,,headline result
+paper,Table 4,SAME,SOON,discrete,val_unseen,SR,SR,36.1,pct,,headline result
+paper,Table 4,SAME,SOON,discrete,val_unseen,SPL,SPL,25.4,pct,,headline result
+paper,Table 4,SAME,SOON,discrete,test_unseen,SR,SR,38.2,pct,,headline result
+paper,Table 4,SAME,SOON,discrete,test_unseen,SPL,SPL,27.1,pct,,headline result
+paper,Table 4,SAME,REVERIE,discrete,val_unseen,SR,SR,46.4,pct,,headline result
+paper,Table 4,SAME,REVERIE,discrete,val_unseen,SPL,SPL,36.1,pct,,headline result
+paper,Table 4,SAME,REVERIE,discrete,test_unseen,SR,SR,48.6,pct,,headline result
+paper,Table 4,SAME,REVERIE,discrete,test_unseen,SPL,SPL,37.1,pct,,headline result
+paper,Table 4,SAME,OBJECTNAV-MP3D,discrete,val,SR,SR,76.3,pct,,headline result
+paper,Table 4,SAME,OBJECTNAV-MP3D,discrete,val,SPL,SPL,42.7,pct,,headline result
+paper,Table 5,SAME,R2R-CE,continuous,val_unseen,NE,NE,5.31,m,zero_shot,same checkpoint as Table 4
+paper,Table 5,SAME,R2R-CE,continuous,val_unseen,SR,SR,47,pct,zero_shot,same checkpoint as Table 4
+paper,Table 5,SAME,R2R-CE,continuous,val_unseen,SPL,SPL,38,pct,zero_shot,same checkpoint as Table 4
+paper,Table 5,SAME,OBJECTNAV-MP3D,continuous,val,SR,SR,43,pct,zero_shot,table header shows MP3D (Val)
+paper,Table 5,SAME,OBJECTNAV-MP3D,continuous,val,SPL,SPL,21,pct,zero_shot,table header shows MP3D (Val)

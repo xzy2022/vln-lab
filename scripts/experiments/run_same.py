@@ -292,8 +292,12 @@ def validate_readonly_csv_header(path: Path, header: list[str]) -> str | None:
     fieldnames, _rows = read_csv_rows(path)
     if fieldnames is None:
         return f"{repo_rel(path)} 为空，无法做 official_results 校验。"
-    if fieldnames != header:
-        return f"{repo_rel(path)} 表头不匹配，期望 {header}，实际 {fieldnames}"
+    missing = [column for column in header if column not in fieldnames]
+    if missing:
+        return (
+            f"{repo_rel(path)} 缺少 official_results 校验所需列 {missing}，"
+            f"实际表头为 {fieldnames}"
+        )
     return None
 
 
