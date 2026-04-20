@@ -146,6 +146,16 @@ python run.py --config_dir "$REPO_DIR"/configs/same/val_r2r_eval_only.yaml
 
 ```
 
+如果你想让实验结果自动归档到 `experiments/` 并更新长期报表，推荐直接使用父项目入口：
+
+```bash
+cd /workspace/vln-lab
+conda activate test-v1
+python scripts/experiments/run_same.py --config configs/same/val_r2r_eval_only.yaml
+```
+
+更完整的说明见 [docs/same-experiment-workflow.md](same-experiment-workflow.md)。
+
 单卡先从最基本的配置开始：
 ```bash
 cd /workspace/vln-lab/third_party/SAME/src
