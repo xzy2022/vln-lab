@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import csv
 import importlib.util
+import io
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -121,6 +125,68 @@ class RunSameTests(unittest.TestCase):
             finally:
                 run_same.METRICS_LONG_CSV = original_path
 
+    def test_ensure_runs_csv_duration_column_migrates_legacy_header_without_backfill(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_root = Path(tmpdir)
+            tmp_runs = tmp_root / "reports" / "tables" / "runs.csv"
+
+            rows = [
+                {
+                    "experiment_id": "0001_same_demo_same_s0_v1",
+                    "date": "2026-04-20-10:00",
+                    "run_type": "checkpoint_eval",
+                    "method": "SAME",
+                    "datasets": "R2R",
+                    "splits": "R2R:val_unseen",
+                    "repo_commit": "repo",
+                    "child_repo_commit": "child",
+                    "config": "configs/same/demo.yaml",
+                    "checkpoint": "../../../data/same/ckpt/SAME.pt",
+                    "seed": "0",
+                    "status": "success",
+                    "log_path": "experiment_outputs/0001_same_demo_same_s0_v1/stdout.log",
+                    "output_dir": "experiment_outputs/0001_same_demo_same_s0_v1",
+                    "patch_set": "patches/same/base/0001-eval-only-exit.patch",
+                },
+                {
+                    "experiment_id": "0002_same_demo_same_s0_v2",
+                    "date": "2026-04-20-11:00",
+                    "run_type": "checkpoint_eval",
+                    "method": "SAME",
+                    "datasets": "R2R",
+                    "splits": "R2R:val_unseen",
+                    "repo_commit": "repo",
+                    "child_repo_commit": "child",
+                    "config": "configs/same/demo.yaml",
+                    "checkpoint": "../../../data/same/ckpt/SAME.pt",
+                    "seed": "0",
+                    "status": "success",
+                    "log_path": "experiment_outputs/0002_same_demo_same_s0_v2/stdout.log",
+                    "output_dir": "experiment_outputs/0002_same_demo_same_s0_v2",
+                    "patch_set": "patches/same/base/0001-eval-only-exit.patch",
+                },
+            ]
+            tmp_runs.parent.mkdir(parents=True, exist_ok=True)
+            with tmp_runs.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=run_same.RUNS_LEGACY_HEADER)
+                writer.writeheader()
+                writer.writerows(rows)
+
+            original_runs_csv = run_same.RUNS_CSV
+            run_same.RUNS_CSV = tmp_runs
+            try:
+                run_same.ensure_runs_csv_duration_column()
+            finally:
+                run_same.RUNS_CSV = original_runs_csv
+
+            with tmp_runs.open("r", encoding="utf-8", newline="") as handle:
+                reader = csv.DictReader(handle)
+                self.assertEqual(reader.fieldnames, run_same.RUNS_HEADER)
+                synced_rows = list(reader)
+
+            self.assertEqual(synced_rows[0]["duration_hms"], "")
+            self.assertEqual(synced_rows[1]["duration_hms"], "")
+
     def test_collapse_progress_lines_keeps_only_last_line_per_segment(self) -> None:
         lines = [
             "Loading data:   0%|          | 0/500 [00:00<?, ?it/s]\n",
@@ -141,6 +207,50 @@ class RunSameTests(unittest.TestCase):
                 "[runner][2026-04-20 02:24:30+0000] official_results.csv 缺少参考项\n",
             ],
         )
+
+    def test_stream_process_preserves_carriage_returns_for_console_and_collapses_stderr_log(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_root = Path(tmpdir)
+            stdout_path = tmp_root / "stdout.log"
+            stderr_path = tmp_root / "stderr.log"
+            process = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import sys; "
+                        "sys.stderr.write('Loading data:   0%|          | 0/2 [00:00<?, ?it/s]\\r'); "
+                        "sys.stderr.flush(); "
+                        "sys.stderr.write('Loading data: 100%|##########| 2/2 [00:00<00:00, 999.99it/s]\\r'); "
+                        "sys.stderr.flush(); "
+                        "sys.stderr.write('done\\n'); "
+                        "sys.stderr.flush()"
+                    ),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                bufsize=0,
+            )
+
+            original_stdout = run_same.sys.stdout
+            original_stderr = run_same.sys.stderr
+            fake_stdout = io.StringIO()
+            fake_stderr = io.StringIO()
+            run_same.sys.stdout = fake_stdout
+            run_same.sys.stderr = fake_stderr
+            try:
+                exit_code = run_same.stream_process(process, stdout_path, stderr_path)
+            finally:
+                run_same.sys.stdout = original_stdout
+                run_same.sys.stderr = original_stderr
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn("\r", fake_stderr.getvalue())
+            self.assertEqual(fake_stdout.getvalue(), "")
+            self.assertEqual(
+                stderr_path.read_text(encoding="utf-8"),
+                "Loading data: 100%|##########| 2/2 [00:00<00:00, 999.99it/s]\ndone\n",
+            )
 
 
 if __name__ == "__main__":
