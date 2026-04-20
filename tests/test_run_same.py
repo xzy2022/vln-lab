@@ -59,6 +59,31 @@ class RunSameTests(unittest.TestCase):
         self.assertEqual(metrics["CVDN"]["val_unseen"]["oracle_path_success_rate"]["unit"], "%")
         self.assertAlmostEqual(metrics["SOON"]["val_unseen"]["det_sr"]["value"], 0.0)
 
+    def test_build_metric_semantic_warnings_flags_unsupported_grounding_metrics(self) -> None:
+        config = {
+            "agent": {"type": "duet"},
+            "feature": {"enable_og": False},
+        }
+        metrics = {
+            "REVERIE": {
+                "val_unseen": {
+                    "rgs": {"value": 0.0, "unit": "%"},
+                    "rgspl": {"value": 0.0, "unit": "%"},
+                }
+            },
+            "SOON": {
+                "val_unseen": {
+                    "det_sr": {"value": 0.0, "unit": "%"},
+                    "det_spl": {"value": 0.0, "unit": "%"},
+                }
+            },
+        }
+        warnings = run_same.build_metric_semantic_warnings(config, metrics)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("feature.enable_og=false", warnings[0])
+        self.assertIn("REVERIE/val_unseen: rgs, rgspl", warnings[0])
+        self.assertIn("SOON/val_unseen: det_spl, det_sr", warnings[0])
+
     def test_cross_check_result_metrics_matches_existing_output(self) -> None:
         experiment_dir = REPO_ROOT / "third_party" / "SAME" / "src" / "output" / "val-r2r-eval-only"
         metrics = run_same.parse_metrics_from_log(experiment_dir / "val-r2r-eval-only.log")
@@ -186,6 +211,33 @@ class RunSameTests(unittest.TestCase):
 
             self.assertEqual(synced_rows[0]["duration_hms"], "")
             self.assertEqual(synced_rows[1]["duration_hms"], "")
+
+    def test_check_official_references_treats_cvdn_gp_as_dist_to_end_reduction_alias(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_official = Path(tmpdir) / "official_results.csv"
+            tmp_official.write_text(
+                "source,method,dataset,split,metric,value,note\n"
+                "paper,SAME,CVDN,val,GP,6.94,Table 4\n",
+                encoding="utf-8",
+            )
+
+            original_official_results = run_same.OFFICIAL_RESULTS_CSV
+            run_same.OFFICIAL_RESULTS_CSV = tmp_official
+            try:
+                warnings = run_same.check_official_references(
+                    {
+                        "CVDN": {
+                            "val_unseen": {
+                                "dist_to_end_reduction": {"value": 6.76, "unit": "m"},
+                            }
+                        }
+                    },
+                    "SAME",
+                )
+            finally:
+                run_same.OFFICIAL_RESULTS_CSV = original_official_results
+
+        self.assertEqual(warnings, [])
 
     def test_collapse_progress_lines_keeps_only_last_line_per_segment(self) -> None:
         lines = [
