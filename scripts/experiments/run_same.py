@@ -112,6 +112,10 @@ RESULT_CROSS_CHECK_METRICS = {
     "rgs": ("rgs", 100.0),
     "rgspl": ("rgspl", 100.0),
 }
+OBJECT_GROUNDING_METRIC_GROUPS = {
+    "REVERIE": {"rgs", "rgspl"},
+    "SOON": {"det_sr", "det_spl"},
+}
 OUTPUT_DIR_OVERRIDE = "../../../experiment_outputs"
 
 
@@ -563,6 +567,51 @@ def canonical_reference_key(method: str, dataset: str, split: str, metric: str) 
     )
 
 
+def canonical_reference_aliases(method: str, dataset: str, split: str, metric: str) -> set[tuple[str, str, str, str]]:
+    canonical_key = canonical_reference_key(method, dataset, split, metric)
+    aliases = {canonical_key}
+    method_key, dataset_key, split_key, metric_key = canonical_key
+
+    # SAME 论文表中的 CVDN `GP` 与当前实现导出的 `dist_to_end_reduction`
+    # 指向同一指标，只是命名与 split 口径不同。
+    if method_key == "same" and dataset_key == "cvdn":
+        if split_key == "val" and metric_key == "gp":
+            aliases.add((method_key, dataset_key, "val_unseen", "dist_to_end_reduction"))
+        if split_key == "val_unseen" and metric_key == "dist_to_end_reduction":
+            aliases.add((method_key, dataset_key, "val", "gp"))
+
+    return aliases
+
+
+def build_metric_semantic_warnings(
+    config: dict[str, Any],
+    metrics: dict[str, dict[str, dict[str, dict[str, float | str]]]],
+) -> list[str]:
+    warnings: list[str] = []
+    agent_type = str(get_in(config, "agent", "type", default="") or "")
+    enable_og = bool(get_in(config, "feature", "enable_og", default=False))
+    if agent_type != "duet" or enable_og:
+        return warnings
+
+    present_metrics: list[str] = []
+    for dataset, expected_metrics in OBJECT_GROUNDING_METRIC_GROUPS.items():
+        for split, metric_map in metrics.get(dataset, {}).items():
+            matched = sorted(metric_name for metric_name in expected_metrics if metric_name in metric_map)
+            if matched:
+                present_metrics.append(f"{dataset}/{split}: {', '.join(matched)}")
+
+    if present_metrics:
+        warnings.append(
+            "当前配置使用 agent.type=duet 且 feature.enable_og=false。"
+            "REVERIE/SOON 的 object grounding / detection 扩展指标"
+            f"（{'; '.join(present_metrics)}）会被 evaluator 计算并写出，"
+            "但默认 runtime 不产出 pred_objid / pred_obj_direction，"
+            "因此这些值应视为“扩展字段未激活”，可归档但不应直接作为论文主结果对照。"
+        )
+
+    return warnings
+
+
 def check_official_references(
     metrics: dict[str, dict[str, dict[str, dict[str, float | str]]]],
     method_name: str,
@@ -573,20 +622,22 @@ def check_official_references(
         return [header_warning]
 
     _fieldnames, rows = read_csv_rows(OFFICIAL_RESULTS_CSV)
-    reference_keys = {
-        canonical_reference_key(
-            row.get("method", ""),
-            row.get("dataset", ""),
-            row.get("split", ""),
-            row.get("metric", ""),
+    reference_keys: set[tuple[str, str, str, str]] = set()
+    for row in rows:
+        reference_keys.update(
+            canonical_reference_aliases(
+                row.get("method", ""),
+                row.get("dataset", ""),
+                row.get("split", ""),
+                row.get("metric", ""),
+            )
         )
-        for row in rows
-    }
+
     for dataset, split_map in metrics.items():
         for split, metric_map in split_map.items():
             for metric_name in metric_map:
-                key = canonical_reference_key(method_name, dataset, split, metric_name)
-                if key not in reference_keys:
+                aliases = canonical_reference_aliases(method_name, dataset, split, metric_name)
+                if reference_keys.isdisjoint(aliases):
                     warnings.append(
                         f"official_results.csv 缺少参考项: method={method_name}, dataset={dataset}, "
                         f"split={split}, metric={metric_name}"
@@ -1197,6 +1248,7 @@ def main() -> int:
     finally:
         metrics = parse_metrics_from_log(same_log_path)
         warnings.extend(cross_check_result_metrics(experiment_dir, metrics))
+        warnings.extend(build_metric_semantic_warnings(config, metrics))
         if metrics:
             warnings.extend(check_official_references(metrics, "SAME"))
         deduped_warnings = list(dict.fromkeys(warnings))
