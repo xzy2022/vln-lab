@@ -123,35 +123,16 @@ python scripts/setup/download_same_assets.py \
 
 ## 5. 运行 SAME
 
-
-冒烟测试
-```bash
-REPO_DIR="/workspace/vln-lab"
-
-cd "$REPO_DIR"/third_party/SAME/src
-python run.py --config_dir "$REPO_DIR"/configs/same/test_r2r_reverie_cvdn_soon.yaml
-
-REPO_DIR="/workspace/vln-lab"
-
-# 应用 SAME 的 base patches，当前包含 0001-eval-only-exit.patch 允许程序在评估完成后直接退出,不进入训练阶段
-bash "$REPO_DIR"/scripts/setup/apply_patches.sh --method same
-
-cd "$REPO_DIR"/third_party/SAME/src
-
-# 四个数据集的推理
-python run.py --config_dir "$REPO_DIR"/configs/same/val_r2r_reverie_cvdn_soon.yaml
-
-# 只在 R2R 数据集推理
-python run.py --config_dir "$REPO_DIR"/configs/same/val_r2r_eval_only.yaml
-
-```
-
 如果你想让实验结果自动归档到 `experiment_outputs/` 并更新长期报表，推荐直接使用父项目入口：
 
 ```bash
 cd /workspace/vln-lab
 conda activate test-v1
+# 只在 R2R 验证集评估
 python scripts/experiments/run_same.py --config configs/same/val_r2r_eval_only.yaml
+
+# 在4个数据集的验证集评估
+python scripts/experiments/run_same.py --config configs/same/val_r2r_reverie_cvdn_soon.yaml
 ```
 
 更完整的说明见 [docs/same-experiment-workflow.md](same-experiment-workflow.md)。
