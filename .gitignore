@@ -5,6 +5,10 @@ __pycache__/
 *.pyd
 *.so
 
+reports/artifacts
+experiment_outputs/
+
+
 # Env
 .env
 .venv/

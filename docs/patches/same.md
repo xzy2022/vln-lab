@@ -9,6 +9,7 @@
 | Patch 文件名                                | 目的                                      | 类型           | 适用版本                | 是否默认应用 | 备注                                                     |
 | ---------------------------------------- | --------------------------------------- | ------------ | ------------------- | ------ | ------------------------------------------------------ |
 | base/0001-eval-only-exit.patch           | 为 `run.py` 增加显式 `experiment.eval_only` | base         | SAME commit b74c57b | 是      | 跳过 `train_dataloaders`，执行 `val_one_epoch(0)` 后直接退出，不改模型与训练实现 |
+| base/0002-console-stdout.patch           | 将控制台 `INFO` 日志从 `stderr` 改到 `stdout` | base         | SAME commit b74c57b | 是      | 仅调整 `logging.StreamHandler` 的目标流，便于实验归档区分 stdout/stderr |
 
 ### 说明
 

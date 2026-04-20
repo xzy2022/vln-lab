@@ -1,0 +1,21 @@
+diff --git a/src/utils/common_utils.py b/src/utils/common_utils.py
+index 7f1835e..f03b7ec 100755
+--- a/src/utils/common_utils.py
++++ b/src/utils/common_utils.py
+@@ -7,6 +7,7 @@ import torch.distributed as dist
+ import pickle
+ import random
+ import shutil
++import sys
+ import numpy as np
+ from omegaconf import OmegaConf
+
+@@ -47,7 +48,7 @@ def setup_logger(log_file=None, rank=0, log_level=logging.INFO):
+     logger.setLevel(log_level if rank == 0 else 'ERROR')
+
+     # Console handler
+-    console = logging.StreamHandler()
++    console = logging.StreamHandler(stream=sys.stdout)
+     console.setLevel(log_level if rank == 0 else 'ERROR')
+
+     # Formatter
