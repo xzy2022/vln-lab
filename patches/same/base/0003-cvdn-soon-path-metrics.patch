@@ -1,17 +1,16 @@
 diff --git a/src/tasks/datasets/cvdn.py b/src/tasks/datasets/cvdn.py
-index 6f43144..f75a1e4 100644
+index 86514a9..dffef3b 100644
 --- a/src/tasks/datasets/cvdn.py
 +++ b/src/tasks/datasets/cvdn.py
-@@ -7,11 +7,18 @@ from omegaconf import DictConfig
- from collections import defaultdict
+@@ -9,10 +9,17 @@ from collections import defaultdict
  from transformers import BertTokenizer
  from .mp3d_envs import Simulator
  from .mp3d_dataset import MP3DDataset
 +from utils.eval_utils import cal_dtw, cal_cls
-
+ 
  ERROR_MARGIN = 3.0
-
-
+ 
+ 
 +def cal_cvdn_cls(shortest_distances, prediction, reference, threshold=ERROR_MARGIN):
 +    if len(reference) == 1 and len(prediction) == 1:
 +        return float(prediction[0] == reference[0])
@@ -20,8 +19,8 @@ index 6f43144..f75a1e4 100644
 +
  class CVDNDataset(MP3DDataset):
      name = "cvdn"
-
-@@ -168,7 +175,10 @@ class CVDNDataset(MP3DDataset):
+     
+@@ -165,7 +172,10 @@ class CVDNDataset(MP3DDataset):
                  'oracle path_success_rate': float(oracle_plan_successes) / float(
                      len(metrics['oracle_plan_errors'])) * 100,
                  'dist_to_end_reduction': sum(metrics['dist_to_end_reductions']) / float(
@@ -33,7 +32,7 @@ index 6f43144..f75a1e4 100644
              }
          else:
              raise NotImplementedError
-@@ -213,6 +223,10 @@ class CVDNDataset(MP3DDataset):
+@@ -212,6 +222,10 @@ class CVDNDataset(MP3DDataset):
          scores['success'] = float(scores['nav_errors'] < ERROR_MARGIN)
          gt_lengths = np.sum([shortest_distances[a][b] for a, b in zip( gt_item['path'][:-1],  gt_item['path'][1:])])
          scores['spl'] = scores['success'] * gt_lengths / max(scores['trajectory_lengths'], gt_lengths, 0.01)
@@ -43,12 +42,12 @@ index 6f43144..f75a1e4 100644
 +        scores['CLS'] = cal_cvdn_cls(shortest_distances, path, gt_item['path'], ERROR_MARGIN)
          scores['shortest_path_lengths'] = shortest_distances[start][goal]
          return scores
-
+     
 diff --git a/src/tasks/datasets/soon.py b/src/tasks/datasets/soon.py
-index 2598432..d3b7fb5 100644
+index 9927b09..feed024 100644
 --- a/src/tasks/datasets/soon.py
 +++ b/src/tasks/datasets/soon.py
-@@ -8,6 +8,7 @@ from typing import List, Dict
+@@ -9,6 +9,7 @@ from typing import List, Dict
  from shapely.geometry import Point
  from shapely.geometry.polygon import Polygon
  from .mp3d_dataset import MP3DDataset
@@ -56,23 +55,24 @@ index 2598432..d3b7fb5 100644
  from collections import defaultdict
  from .mp3d_envs import Simulator
  import math
-@@ -165,6 +166,9 @@ class SOONDataset(MP3DDataset):
+@@ -164,6 +165,9 @@ class SOONDataset(MP3DDataset):
              'spl': np.mean(metrics['spl']) * 100,
              'det_sr': np.mean(metrics['det_success']) * 100,
              'det_spl': np.mean(metrics['det_spl']) * 100,
 +            'nDTW': np.mean(metrics['nDTW']) * 100,
 +            'SDTW': np.mean(metrics['SDTW']) * 100,
 +            'CLS': np.mean(metrics['CLS']) * 100,
-
+             
          }
          return avg_metrics, metrics
-@@ -238,6 +242,10 @@ class SOONDataset(MP3DDataset):
-
+@@ -227,6 +231,10 @@ class SOONDataset(MP3DDataset):
+ 
          scores['spl'] = scores['success'] * gt_lengths / max(scores['trajectory_lengths'], gt_lengths, 0.01)
          scores['det_spl'] = scores['det_success'] * gt_lengths / max(scores['trajectory_lengths'], gt_lengths, 0.01)
 +        scores.update(
 +            cal_dtw(shortest_distances, path, gt_path, scores['success'], ERROR_MARGIN)
 +        )
 +        scores['CLS'] = cal_cls(shortest_distances, path, gt_path, ERROR_MARGIN)
-
+ 
          return scores
+     

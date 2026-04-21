@@ -1,0 +1,524 @@
+diff --git a/src/tasks/datasets/mp3d_dataset.py b/src/tasks/datasets/mp3d_dataset.py
+index b3f1456..20928dc 100755
+--- a/src/tasks/datasets/mp3d_dataset.py
++++ b/src/tasks/datasets/mp3d_dataset.py
+@@ -1,5 +1,6 @@
+ import os
+ import copy
++import json
+ import math
+ import torch
+ import numpy as np
+@@ -343,6 +344,467 @@ class MP3DDataset(BaseDataset):
+             candidate_new.append(c_new)
+         return candidate_new
+ 
++
++    def save_eval_items_sidecars(
++        self,
++        results,
++        output_dir,
++        item_metrics=None,
++        score_summary=None,
++        dataset_name=None,
++        split=None,
++        official_results_filename=None,
++        experiment_id=None,
++    ):
++        dataset_name = dataset_name or self.source
++        if dataset_name not in {"R2R", "REVERIE", "CVDN", "SOON"}:
++            return None
++
++        split = split or self.split
++        simulation_env = self._eval_item_simulation_env()
++        success_threshold_m = 3.0
++        official_results_filename = official_results_filename or f"{dataset_name}_{split}_results.json"
++        items_filename = f"{dataset_name}_{split}_eval_items.jsonl"
++        context_filename = f"{dataset_name}_{split}_eval_context.json"
++
++        os.makedirs(output_dir, exist_ok=True)
++        items_path = os.path.join(output_dir, items_filename)
++        context_path = os.path.join(output_dir, context_filename)
++
++        annotations = {item['instr_id']: item for item in self.alldata}
++        metric_rows = self._eval_item_metric_rows(item_metrics, len(results))
++        rows = []
++        seen_ids = set()
++
++        for index, pred in enumerate(results):
++            internal_item_id = pred['instr_id']
++            if internal_item_id in seen_ids:
++                raise ValueError(f"Duplicate eval item internal_item_id: {internal_item_id}")
++            seen_ids.add(internal_item_id)
++
++            if internal_item_id not in annotations:
++                raise KeyError(f"Prediction instr_id {internal_item_id} is missing from dataset annotations")
++
++            ann = annotations[internal_item_id]
++            row = self._build_eval_item_row(
++                dataset_name=dataset_name,
++                split=split,
++                simulation_env=simulation_env,
++                success_threshold_m=success_threshold_m,
++                pred=pred,
++                ann=ann,
++                metric_row=metric_rows[index],
++            )
++            if row['prediction']['trajectory'] and row['prediction']['trajectory'][0] != row['annotation']['start_viewpoint']:
++                raise ValueError(
++                    f"Eval item {internal_item_id} starts at {row['prediction']['trajectory'][0]}, "
++                    f"expected {row['annotation']['start_viewpoint']}"
++                )
++            rows.append(self._eval_item_json_ready(row))
++
++        if len(rows) != len(results):
++            raise ValueError(f"Eval item row count {len(rows)} does not match prediction count {len(results)}")
++
++        self._validate_eval_item_aggregates(dataset_name, rows, score_summary)
++
++        context = {
++            'schema_version': 'eval_context.v1',
++            'items_schema_version': 'eval_items.v2',
++            'run_context': {
++                'framework': 'SAME',
++                'experiment_id': experiment_id if experiment_id is not None else self._eval_item_experiment_id(),
++                'dataset': dataset_name,
++                'split': split,
++                'simulation_env': simulation_env,
++                'success_threshold_m': success_threshold_m,
++            },
++            'files': {
++                'official_results': official_results_filename,
++                'eval_items': items_filename,
++            },
++            'counts': {
++                'predictions': len(results),
++                'items': len(rows),
++                'unique_internal_item_ids': len(seen_ids),
++            },
++            'score_summary': score_summary or {},
++        }
++
++        with open(context_path, 'w') as fout:
++            json.dump(self._eval_item_json_ready(context), fout, ensure_ascii=False, indent=2)
++
++        with open(items_path, 'w') as fout:
++            for row in rows:
++                fout.write(json.dumps(row, ensure_ascii=False) + '\n')
++
++        return {
++            'context_path': context_path,
++            'items_path': items_path,
++        }
++
++    def _build_eval_item_row(self, dataset_name, split, simulation_env, success_threshold_m, pred, ann, metric_row):
++        scan = ann['scan']
++        gt_path = list(ann.get('path', []))
++        pred_segments = pred.get('trajectory', [])
++        trajectory = self._eval_item_flatten_segments(pred_segments)
++        shortest_distances = self.environments[simulation_env]['shortest_distances'][scan]
++
++        nav_goal_viewpoint = gt_path[-1] if gt_path else None
++        success_targets = self._eval_item_success_targets(dataset_name, ann, scan, nav_goal_viewpoint)
++
++        edge_lengths = self._eval_item_edge_lengths(shortest_distances, trajectory)
++        gt_edge_lengths = self._eval_item_edge_lengths(shortest_distances, gt_path)
++        primitives = {
++            'final_viewpoint': trajectory[-1] if trajectory else None,
++            'nearest_viewpoint_to_nav_goal': self._eval_item_nearest(shortest_distances, nav_goal_viewpoint, trajectory),
++            'trajectory_edge_lengths_m': edge_lengths,
++            'trajectory_cumulative_lengths_m': self._eval_item_cumulative_lengths(edge_lengths),
++            'distance_to_nav_goal_by_step_m': self._eval_item_distances_to_goal(
++                shortest_distances, trajectory, nav_goal_viewpoint
++            ),
++            'gt_path_edge_lengths_m': gt_edge_lengths,
++            'gt_path_length_m': self._eval_item_path_length(gt_edge_lengths),
++            'shortest_start_to_nav_goal_distance_m': self._eval_item_distance(
++                shortest_distances,
++                gt_path[0] if gt_path else None,
++                nav_goal_viewpoint,
++            ),
++        }
++
++        if dataset_name == 'REVERIE':
++            primitives['distance_to_nearest_success_target_by_step_m'] = self._eval_item_distances_to_nearest(
++                shortest_distances, trajectory, success_targets
++            )
++        elif dataset_name == 'CVDN':
++            planner_path = list(ann.get('planner_path', []))
++            planner_goal = planner_path[-1] if planner_path else None
++            primitives['distance_to_planner_goal_by_step_m'] = self._eval_item_distances_to_goal(
++                shortest_distances, trajectory, planner_goal
++            )
++            primitives['distance_to_nearest_end_pano_by_step_m'] = self._eval_item_distances_to_nearest(
++                shortest_distances, trajectory, ann.get('end_panos', [])
++            )
++        elif dataset_name == 'SOON':
++            bbox_viewpoints = list(ann.get('end_image_ids', []))
++            primitives['distance_to_nearest_bbox_viewpoint_by_step_m'] = self._eval_item_distances_to_nearest(
++                shortest_distances, trajectory, bbox_viewpoints
++            )
++
++        return {
++            'schema_version': 'eval_items.v2',
++            'identity': self._eval_item_identity(dataset_name, ann, pred),
++            'annotation': {
++                'scan': scan,
++                'instruction': ann.get('instruction'),
++                'instruction_meta': {
++                    'whitespace_token_count': len((ann.get('instruction') or '').split()),
++                    'encoding_len': len(ann.get('instr_encoding', [])),
++                },
++                'start_viewpoint': gt_path[0] if gt_path else None,
++                'nav_goal_viewpoint': nav_goal_viewpoint,
++                'success_target_viewpoints': success_targets,
++                'gt_path': gt_path,
++            },
++            'prediction': self._eval_item_prediction(dataset_name, pred, trajectory),
++            'primitives': primitives,
++            'official_item_scores': self._eval_item_scores(
++                dataset_name, metric_row, primitives, success_threshold_m
++            ),
++            'dataset_extras': self._eval_item_dataset_extras(dataset_name, ann, pred, scan, success_targets),
++        }
++
++    def _eval_item_identity(self, dataset_name, ann, pred):
++        internal_item_id = pred['instr_id']
++        instr_idx = None
++        if dataset_name in {'R2R', 'REVERIE', 'SOON'}:
++            instr_idx = self._eval_item_int_or_none(internal_item_id.rsplit('_', 1)[-1])
++
++        source_ids = {
++            'path_id': ann.get('path_id'),
++            'instr_idx': instr_idx,
++            'inst_idx': ann.get('inst_idx'),
++            'obj_id': ann.get('objId'),
++            'raw_idx': ann.get('raw_idx'),
++            'sample_idx': ann.get('sample_idx'),
++        }
++        if dataset_name == 'CVDN':
++            source_ids['path_id'] = None
++            source_ids['instr_idx'] = None
++            source_ids['inst_idx'] = ann.get('inst_idx', ann.get('path_id'))
++            source_ids['obj_id'] = None
++
++        return {
++            'internal_item_id': internal_item_id,
++            'saved_instr_id': self._eval_item_saved_instr_id(dataset_name, internal_item_id),
++            'source_ids': source_ids,
++            'same_ids': {
++                'instr_id': ann.get('instr_id', internal_item_id),
++                'path_id': ann.get('path_id'),
++                'sample_idx': ann.get('sample_idx'),
++                'data_type': ann.get('data_type'),
++            },
++        }
++
++    def _eval_item_success_targets(self, dataset_name, ann, scan, nav_goal_viewpoint):
++        if dataset_name == 'REVERIE':
++            visible_vps = ann.get('end_vps')
++            if visible_vps is None and ann.get('objId') is not None:
++                visible_vps = getattr(self, 'obj2vps', {}).get('%s_%s' % (scan, str(ann.get('objId'))), [])
++            return list(visible_vps or [])
++        if nav_goal_viewpoint is None:
++            return []
++        return [nav_goal_viewpoint]
++
++    def _eval_item_dataset_extras(self, dataset_name, ann, pred, scan, success_targets):
++        if dataset_name == 'REVERIE':
++            return {
++                'reverie': {
++                    'gt_obj_id': ann.get('objId'),
++                    'pred_obj_id': pred.get('pred_objid'),
++                    'visible_viewpoints': list(success_targets or []),
++                }
++            }
++        if dataset_name == 'CVDN':
++            planner_path = list(ann.get('planner_path', []))
++            return {
++                'cvdn': {
++                    'end_panos': list(ann.get('end_panos', [])),
++                    'planner_path': planner_path,
++                    'planner_goal': planner_path[-1] if planner_path else None,
++                }
++            }
++        if dataset_name == 'SOON':
++            obj_heading, obj_elevation = self._eval_item_soon_direction(pred)
++            return {
++                'soon': {
++                    'bbox_viewpoints': list(ann.get('end_image_ids', [])),
++                    'obj_name': ann.get('obj_name'),
++                    'pseudo_labels': ann.get('image_id_to_obj_label', {}),
++                    'pred_obj_heading': obj_heading,
++                    'pred_obj_elevation': obj_elevation,
++                }
++            }
++        return {}
++
++    def _eval_item_prediction(self, dataset_name, pred, trajectory):
++        return {
++            'pred_path_segments': pred.get('trajectory', []),
++            'trajectory': trajectory,
++            'official_saved_trajectory': self._eval_item_official_saved_trajectory(dataset_name, pred, trajectory),
++        }
++
++    def _eval_item_official_saved_trajectory(self, dataset_name, pred, trajectory):
++        if dataset_name == 'SOON':
++            obj_heading, obj_elevation = self._eval_item_soon_direction(pred)
++            return [{
++                'path': [[vp, 0, 0] for vp in trajectory],
++                'obj_heading': [obj_heading if obj_heading is not None else 0],
++                'obj_elevation': [obj_elevation if obj_elevation is not None else 0],
++            }]
++        return [[vp, 0, 0] for vp in trajectory]
++
++    @staticmethod
++    def _eval_item_metric_rows(item_metrics, count):
++        rows = [dict() for _ in range(count)]
++        if item_metrics is None:
++            return rows
++        for key, values in item_metrics.items():
++            if isinstance(values, (str, bytes)):
++                continue
++            try:
++                value_count = len(values)
++            except TypeError:
++                continue
++            if value_count != count:
++                continue
++            for idx in range(count):
++                rows[idx][key] = values[idx]
++        return rows
++
++    @staticmethod
++    def _eval_item_scores(dataset_name, metric_row, primitives, success_threshold_m):
++        raw_same = dict(metric_row)
++        if dataset_name == 'CVDN':
++            final_distance = raw_same.get('nav_errors')
++            min_distance = raw_same.get('oracle_errors')
++        else:
++            final_distance = raw_same.get('nav_error')
++            min_distance = raw_same.get('oracle_error')
++
++        shortest_path_length = raw_same.get('shortest_path_lengths')
++        if shortest_path_length is None:
++            shortest_path_length = primitives.get('shortest_start_to_nav_goal_distance_m')
++
++        final_success = raw_same.get('success')
++        if final_success is not None:
++            final_success = bool(final_success)
++
++        oracle_success = raw_same.get('oracle_success')
++        if oracle_success is not None:
++            oracle_success = bool(oracle_success)
++        elif dataset_name == 'CVDN' and min_distance is not None:
++            oracle_success = bool(min_distance < success_threshold_m)
++
++        return {
++            'raw_same': raw_same,
++            'canonical': {
++                'final_distance_m': final_distance,
++                'min_distance_along_trajectory_m': min_distance,
++                'actual_length_m': raw_same.get('trajectory_lengths'),
++                'shortest_path_length_m': shortest_path_length,
++                'final_success': final_success,
++                'oracle_success': oracle_success,
++            },
++        }
++
++    @staticmethod
++    def _validate_eval_item_aggregates(dataset_name, rows, score_summary):
++        if score_summary is None or not rows:
++            return
++
++        def average(values):
++            values = [value for value in values if value is not None]
++            if not values:
++                return None
++            return float(sum(values)) / float(len(values))
++
++        checks = []
++        canonical_rows = [row['official_item_scores']['canonical'] for row in rows]
++        raw_rows = [row['official_item_scores']['raw_same'] for row in rows]
++
++        if 'nav_error' in score_summary:
++            nav_error = average([row.get('final_distance_m') for row in canonical_rows])
++            if nav_error is not None:
++                checks.append(('nav_error', nav_error, score_summary['nav_error']))
++        if 'sr' in score_summary:
++            sr = average([
++                float(row.get('final_success')) for row in canonical_rows
++                if row.get('final_success') is not None
++            ])
++            if sr is not None:
++                checks.append(('sr', sr * 100.0, score_summary['sr']))
++        if 'spl' in score_summary:
++            spl = average([row.get('spl') for row in raw_rows])
++            if spl is not None:
++                checks.append(('spl', spl * 100.0, score_summary['spl']))
++
++        for metric_name, actual_value, expected_value in checks:
++            if actual_value is None or expected_value is None:
++                continue
++            if abs(float(actual_value) - float(expected_value)) > 1e-4:
++                raise ValueError(
++                    f"Eval item aggregate {metric_name} mismatch for {dataset_name}: "
++                    f"{actual_value} vs {expected_value}"
++                )
++
++    @staticmethod
++    def _eval_item_saved_instr_id(dataset_name, internal_item_id):
++        if dataset_name in {'R2R', 'REVERIE'}:
++            return internal_item_id.split('_', 1)[1]
++        if dataset_name == 'SOON':
++            compressed = internal_item_id.split('_')[2].split('-')[0]
++            return MP3DDataset._eval_item_int_or_none(compressed)
++        return internal_item_id
++
++    def _eval_item_simulation_env(self):
++        if 'mattersim' in self.environments:
++            return 'mattersim'
++        return self.simulation_envs[0]
++
++    def _eval_item_experiment_id(self):
++        experiment = getattr(self.config, 'experiment', None)
++        return getattr(experiment, 'id', None)
++
++    @staticmethod
++    def _eval_item_flatten_segments(path_segments):
++        path = []
++        for segment in path_segments:
++            if isinstance(segment, str):
++                path.append(segment)
++            else:
++                path.extend(list(segment))
++        return path
++
++    @staticmethod
++    def _eval_item_soon_direction(pred):
++        pred_direction = pred.get('pred_obj_direction')
++        if pred_direction is None:
++            return None, None
++        return pred_direction[0], pred_direction[1]
++
++    @staticmethod
++    def _eval_item_distance(shortest_distances, start, goal):
++        if start is None or goal is None:
++            return None
++        try:
++            return float(shortest_distances[start][goal])
++        except (KeyError, TypeError):
++            return None
++
++    @classmethod
++    def _eval_item_edge_lengths(cls, shortest_distances, path):
++        return [cls._eval_item_distance(shortest_distances, start, goal) for start, goal in zip(path[:-1], path[1:])]
++
++    @staticmethod
++    def _eval_item_path_length(edge_lengths):
++        if any(length is None for length in edge_lengths):
++            return None
++        return float(sum(edge_lengths))
++
++    @classmethod
++    def _eval_item_cumulative_lengths(cls, edge_lengths):
++        cumulative = [0.0]
++        total = 0.0
++        for length in edge_lengths:
++            if length is None or cumulative[-1] is None:
++                cumulative.append(None)
++            else:
++                total += length
++                cumulative.append(float(total))
++        return cumulative
++
++    @classmethod
++    def _eval_item_distances_to_goal(cls, shortest_distances, path, goal):
++        return [cls._eval_item_distance(shortest_distances, vp, goal) for vp in path]
++
++    @classmethod
++    def _eval_item_distances_to_nearest(cls, shortest_distances, path, goals):
++        goals = list(goals or [])
++        distances = []
++        for vp in path:
++            step_distances = [cls._eval_item_distance(shortest_distances, vp, goal) for goal in goals]
++            step_distances = [distance for distance in step_distances if distance is not None]
++            distances.append(min(step_distances) if step_distances else None)
++        return distances
++
++    def _eval_item_nearest(self, shortest_distances, goal, path):
++        if goal is None or not path:
++            return None
++        return self.get_nearest(shortest_distances, goal, path)
++
++    @staticmethod
++    def _eval_item_int_or_none(value):
++        try:
++            return int(value)
++        except (TypeError, ValueError):
++            return value
++
++    @staticmethod
++    def _eval_item_json_ready(value):
++        if isinstance(value, np.ndarray):
++            return MP3DDataset._eval_item_json_ready(value.tolist())
++        if isinstance(value, np.generic):
++            return MP3DDataset._eval_item_json_ready(value.item())
++        if isinstance(value, float):
++            return value if math.isfinite(value) else None
++        if isinstance(value, (list, tuple)):
++            return [MP3DDataset._eval_item_json_ready(item) for item in value]
++        if isinstance(value, set):
++            return [MP3DDataset._eval_item_json_ready(item) for item in sorted(value)]
++        if isinstance(value, dict):
++            return {str(key): MP3DDataset._eval_item_json_ready(val) for key, val in value.items()}
++        return value
++
+     def get_nearest(self, shortest_distances, goal_id, path):
+         near_id = path[0]
+         near_d = shortest_distances[near_id][goal_id]
+diff --git a/src/tasks/datasets/soon.py b/src/tasks/datasets/soon.py
+index feed024..051013f 100644
+--- a/src/tasks/datasets/soon.py
++++ b/src/tasks/datasets/soon.py
+@@ -211,6 +211,9 @@ class SOONDataset(MP3DDataset):
+             
+         else:
+             scores['det_success'] = False
++            scores['heading_error'] = None
++            scores['elevation_error'] = None
++            scores['point_det_error'] = None
+ 
+         scores['action_steps'] = len(pred_path) - 1
+         scores['trajectory_steps'] = len(path) - 1
+diff --git a/src/trainers/base_trainer.py b/src/trainers/base_trainer.py
+index 0a1ef25..d37e02d 100644
+--- a/src/trainers/base_trainer.py
++++ b/src/trainers/base_trainer.py
+@@ -405,9 +405,25 @@ class BaseTrainer(metaclass=MetaTrainer):
+                         loss_str += ', %s: %.2f' % (metric, val)
+             
+             if self.rank == 0:
++                results_dir = os.path.join(self.output_dir, "results")
++                eval_items_dir = os.path.join(self.output_dir, "eval_items")
++                results_filename = f"{task_name}_{split}_results.json"
++
++                if item_metrics is not None and hasattr(dataset, "save_eval_items_sidecars"):
++                    dataset.save_eval_items_sidecars(
++                        all_preds,
++                        eval_items_dir,
++                        item_metrics=item_metrics,
++                        score_summary=score_summary,
++                        dataset_name=task_name,
++                        split=split,
++                        official_results_filename=results_filename,
++                        experiment_id=self.config.experiment.id,
++                    )
++
+                 dataset.save_json(
+                     all_preds, 
+-                    os.path.join(self.output_dir, "results", f"{task_name}_{split}_results.json"),
++                    os.path.join(results_dir, results_filename),
+                     item_metrics=item_metrics if item_metrics is not None else None
+                 )
+ 
