@@ -1,0 +1,64 @@
+experiment:
+  id: "val-all-r2r-reverie-cvdn-soon"
+  # IMPORTANT:
+  # In unmodified SAME, `test: false` always routes to `trainer.train()`.
+  # We keep it false so the framework uses validation splits and computes SR/SPL/nDTW.
+  # This config therefore performs "eval first, then train" unless the process is
+  # stopped externally or SAME is patched to support eval-only mode explicitly.
+  test: false
+  # Run the validation pass before the train loop so metrics are emitted early.
+  eval_first: true
+  # Requires patches/same/experimental/0001-eval-only-exit.patch.
+  # When that patch is applied, SAME will run one validation pass and exit cleanly.
+  eval_only: true
+  # Safety guards: do not save new checkpoints when the run falls through to train.
+  max_saved_ckpts: 0
+  save_latest_states: false
+  data_dir: "../../../data/same"
+  # Keep the official evaluation checkpoint for reproducible metrics.
+  # Note: SAME restores epoch / iteration counters from this file, so config-only
+  # `training.iters: 0` cannot prevent the later train() call.
+  resume_file: "../../../data/same/ckpt/SAME.pt"
+
+training:
+  # Best-effort guard only. These values are overwritten by SAME.pt during resume.
+  iters: 0
+  num_iters_per_epoch: 1
+  batch_size: 8
+  val_batch_size: 4
+  workers: 2
+
+model:
+  moe_position: "Attn_q"
+  pretrained_ckpt: "../../../data/same/pretrain/Attnq_pretrained_ckpt.pt"
+  task_routing_feature: "multi"
+
+simulator:
+  connectivity_dir:
+    "mattersim": "../../../data/same/simulator/connectivity/"
+  candidate_file_dir:
+    "mattersim": "../../../data/same/simulator/mp3d_scanvp_candidates.json"
+  node_location_dir:
+    "mattersim": "../../../data/same/simulator/mp3d_connectivity_graphs.json"
+
+task:
+  source: ["R2R", "REVERIE", "CVDN", "SOON"]
+  val_source: ["R2R", "REVERIE", "CVDN", "SOON"]
+  test_source: ["R2R", "REVERIE", "CVDN", "SOON"]
+  train_simulation_env:
+    "R2R": "mattersim"
+    "REVERIE": "mattersim"
+    "CVDN": "mattersim"
+    "SOON": "mattersim"
+  eval_simulation_env:
+    "R2R": "mattersim"
+    "REVERIE": "mattersim"
+    "CVDN": "mattersim"
+    "SOON": "mattersim"
+  # Evaluate every validation split defined by SAME for these four datasets.
+  # R2R / REVERIE have val_train_seen; CVDN / SOON do not.
+  eval_splits:
+    "R2R": ["val_train_seen", "val_seen", "val_unseen"]
+    "REVERIE": ["val_train_seen", "val_seen", "val_unseen"]
+    "CVDN": ["val_seen", "val_unseen"]
+    "SOON": ["val_seen", "val_unseen"]

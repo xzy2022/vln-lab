@@ -10,6 +10,7 @@
 | ---------------------------------------- | --------------------------------------- | ------------ | ------------------- | ------ | ------------------------------------------------------ |
 | base/0001-eval-only-exit.patch           | 为 `run.py` 增加显式 `experiment.eval_only` | base         | SAME commit b74c57b | 是      | 跳过 `train_dataloaders`，执行 `val_one_epoch(0)` 后直接退出，不改模型与训练实现 |
 | base/0002-console-stdout.patch           | 将控制台 `INFO` 日志从 `stderr` 改到 `stdout` | base         | SAME commit b74c57b | 是      | 仅调整 `logging.StreamHandler` 的目标流，便于实验归档区分 stdout/stderr |
+| base/0003-cvdn-soon-path-metrics.patch   | 为 CVDN/SOON 增加路径质量指标                 | base         | SAME commit b74c57b | 是      | 追加 `nDTW`、`SDTW`、`CLS`，保留原有 SR/SPL 等指标                 |
 
 ### 说明
 
@@ -19,4 +20,4 @@
   - `bash scripts/setup/revert_patches.sh --method same`
 - 应用后可在 YAML 中显式设置：
   - `experiment.eval_only: true`
-- 该补丁只修改入口调度与默认配置，不触碰模型、loss、optimizer 或 trainer 细节。
+- 这些补丁不触碰模型、loss、optimizer 或 trainer 细节；0003 仅补充 CVDN/SOON 的评测指标计算。
