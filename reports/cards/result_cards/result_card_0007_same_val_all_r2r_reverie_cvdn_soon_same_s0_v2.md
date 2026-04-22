@@ -17,12 +17,12 @@
 ## Comparison
 | dataset | split | metric | paper_official | current | delta | note |
 |---|---|---|---:|---:|---:|---|
-| R2R | val_unseen | SR | 76.00 | 76.29 | +0.29 | headline result |
-| R2R | val_unseen | SPL | 66.00 | 66.24 | +0.24 | headline result |
-| REVERIE | val_unseen | SR | 46.40 | 45.84 | -0.56 | headline result |
-| REVERIE | val_unseen | SPL | 36.10 | 35.85 | -0.25 | headline result |
-| SOON | val_unseen | SR | 36.10 | 36.34 | +0.24 | headline result |
-| SOON | val_unseen | SPL | 25.40 | 25.66 | +0.26 | headline result |
+| R2R | val_unseen | SR | 76.00 | 76.29 | +0.29 | Table 4 |
+| R2R | val_unseen | SPL | 66.00 | 66.24 | +0.24 | Table 4 |
+| REVERIE | val_unseen | SR | 46.40 | 45.84 | -0.56 | Table 4 |
+| REVERIE | val_unseen | SPL | 36.10 | 35.85 | -0.25 | Table 4 |
+| SOON | val_unseen | SR | 36.10 | 36.34 | +0.24 | Table 4 |
+| SOON | val_unseen | SPL | 25.40 | 25.66 | +0.26 | Table 4 |
 | CVDN | val_unseen | GP | 6.94 | 6.76 | -0.18 | 论文中的 `GP` 对应当前实现的 `dist_to_end_reduction`；论文表 split 记作 `val` |
 
 ## Resource
