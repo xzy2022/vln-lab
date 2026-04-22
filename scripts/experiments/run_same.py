@@ -5,6 +5,7 @@ import argparse
 import codecs
 import csv
 import datetime as dt
+import hashlib
 import json
 import os
 import re
@@ -26,11 +27,13 @@ EXPERIMENT_OUTPUTS_DIR = REPO_ROOT / "experiment_outputs"
 LEGACY_EXPERIMENTS_DIR = REPO_ROOT / "experiments"
 REPORT_TABLES_DIR = REPO_ROOT / "reports" / "tables"
 PATCH_DIR = REPO_ROOT / "patches" / "same" / "base"
+PATCH_EXPERIMENTAL_DIR = REPO_ROOT / "patches" / "same" / "experimental"
 PATCH_SCRIPT = REPO_ROOT / "scripts" / "setup" / "apply_patches.sh"
 DEFAULT_CONFIG_PATH = SAME_SRC_DIR / "configs" / "default.yaml"
 RUNS_CSV = REPORT_TABLES_DIR / "runs.csv"
 METRICS_LONG_CSV = REPORT_TABLES_DIR / "metrics_long.csv"
 OFFICIAL_RESULTS_CSV = REPORT_TABLES_DIR / "official_results.csv"
+SAME_RUNTIME_DIFF_PATHS = ["src"]
 
 RUNS_LEGACY_HEADER = [
     "experiment_id",
@@ -131,6 +134,24 @@ def parse_args() -> argparse.Namespace:
         default=[],
         metavar="KEY=VALUE",
         help="Additional SAME OmegaConf override, repeatable.",
+    )
+    parser.add_argument(
+        "--experimental-patch",
+        action="append",
+        default=[],
+        metavar="PATCH",
+        help=(
+            "Experimental SAME patch to apply and record. Must live under "
+            "patches/same/experimental/. Repeatable."
+        ),
+    )
+    parser.add_argument(
+        "--fail-on-manual-worktree",
+        action="store_true",
+        help=(
+            "Fail before running if third_party/SAME runtime code differs from "
+            "the declared base and experimental patches."
+        ),
     )
     return parser.parse_args()
 
@@ -823,10 +844,86 @@ def summarize_datasets_and_splits(config: dict[str, Any]) -> tuple[str, str]:
     return ";".join(datasets), ";".join(splits)
 
 
-def build_patch_set() -> list[str]:
-    if not PATCH_DIR.exists():
-        return []
-    return [repo_rel(path) for path in sorted(PATCH_DIR.glob("*.patch"))]
+def path_is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def text_sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def resolve_experimental_patch_path(raw_patch: str) -> Path:
+    path = Path(raw_patch)
+    if not path.is_absolute():
+        path = REPO_ROOT / path
+    path = path.resolve()
+
+    if not path.exists():
+        raise FileNotFoundError(f"未找到 experimental patch: {repo_rel(path)}")
+    if path.suffix != ".patch":
+        raise ValueError(f"--experimental-patch 必须指向 .patch 文件: {repo_rel(path)}")
+    if not path_is_relative_to(path, PATCH_EXPERIMENTAL_DIR):
+        raise ValueError(
+            "--experimental-patch 只能引用 patches/same/experimental/ 下的补丁: "
+            f"{repo_rel(path)}"
+        )
+    return path
+
+
+def build_patch_paths(experimental_patches: Iterable[str] | None = None) -> list[Path]:
+    patch_paths = sorted(PATCH_DIR.glob("*.patch")) if PATCH_DIR.exists() else []
+    patch_paths.extend(resolve_experimental_patch_path(raw) for raw in (experimental_patches or []))
+
+    seen: set[Path] = set()
+    duplicates: list[str] = []
+    for path in patch_paths:
+        resolved = path.resolve()
+        if resolved in seen:
+            duplicates.append(repo_rel(path))
+        seen.add(resolved)
+    if duplicates:
+        raise ValueError(f"patch_set 包含重复补丁: {', '.join(duplicates)}")
+
+    return patch_paths
+
+
+def build_patch_set(experimental_patches: Iterable[str] | None = None) -> list[str]:
+    return [repo_rel(path) for path in build_patch_paths(experimental_patches)]
+
+
+def patch_category(path: Path) -> str:
+    if path_is_relative_to(path, PATCH_DIR):
+        return "base"
+    if path_is_relative_to(path, PATCH_EXPERIMENTAL_DIR):
+        return "experimental"
+    return "custom"
+
+
+def build_patch_manifest(patch_paths: Iterable[Path]) -> list[dict[str, str]]:
+    return [
+        {
+            "path": repo_rel(path),
+            "category": patch_category(path),
+            "sha256": file_sha256(path),
+        }
+        for path in patch_paths
+    ]
+
+
+def patch_set_from_paths(patch_paths: Iterable[Path]) -> list[str]:
+    return [repo_rel(path) for path in patch_paths]
 
 
 def run_shell_command(
@@ -850,6 +947,21 @@ def run_git_command(repo_dir: Path, args: list[str]) -> subprocess.CompletedProc
             if setup.returncode != 0:
                 return setup
         return run_shell_command(["git"] + args, repo_dir, env=env)
+
+
+def run_plain_git_command(repo_dir: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
+    return run_shell_command(["git"] + args, repo_dir)
+
+
+def run_git_command_for_repo(
+    repo_dir: Path,
+    args: list[str],
+    *,
+    use_safe_git: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    if use_safe_git:
+        return run_git_command(repo_dir, args)
+    return run_plain_git_command(repo_dir, args)
 
 
 def read_git_commit(repo_dir: Path) -> str:
@@ -916,6 +1028,223 @@ def build_patch_diff_text() -> str:
         git_diff_output(SAME_ROOT, include_cached=True, exclude_reports=False),
     ]
     return "".join(parts)
+
+
+def apply_patch_to_repo(repo_dir: Path, patch_path: Path, *, use_safe_git: bool = True) -> str:
+    check = run_git_command_for_repo(repo_dir, ["apply", "--check", str(patch_path)], use_safe_git=use_safe_git)
+    if check.returncode == 0:
+        result = run_git_command_for_repo(repo_dir, ["apply", str(patch_path)], use_safe_git=use_safe_git)
+        if result.returncode != 0:
+            message = result.stderr.strip() or result.stdout.strip() or "git apply failed"
+            raise RuntimeError(f"无法应用 patch: {repo_rel(patch_path)} ({message})")
+        return "applied"
+
+    reverse = run_git_command_for_repo(
+        repo_dir,
+        ["apply", "--reverse", "--check", str(patch_path)],
+        use_safe_git=use_safe_git,
+    )
+    if reverse.returncode == 0:
+        return "already_applied"
+
+    message = check.stderr.strip() or reverse.stderr.strip() or check.stdout.strip() or "git apply --check failed"
+    raise RuntimeError(f"无法应用 patch: {repo_rel(patch_path)} ({message})")
+
+
+def normalize_git_path(repo_dir: Path, path: Path | str) -> str | None:
+    candidate = Path(path)
+    if not candidate.is_absolute():
+        return candidate.as_posix()
+    try:
+        return candidate.resolve().relative_to(repo_dir.resolve()).as_posix()
+    except ValueError:
+        return None
+
+
+def read_git_status_for_paths(repo_dir: Path, paths: Iterable[Path | str]) -> tuple[str, list[str]]:
+    git_paths: list[str] = []
+    external_paths: list[str] = []
+    for path in paths:
+        git_path = normalize_git_path(repo_dir, path)
+        if git_path is None:
+            external_paths.append(str(path))
+        else:
+            git_paths.append(git_path)
+
+    if not git_paths:
+        return "", external_paths
+
+    result = run_git_command(repo_dir, ["status", "--short", "--untracked-files=all", "--"] + git_paths)
+    status = result.stdout.strip() if result.returncode == 0 else "<unavailable>"
+    return status, external_paths
+
+
+def git_diff_head_for_paths(
+    repo_dir: Path,
+    pathspecs: Iterable[str],
+    *,
+    use_safe_git: bool = True,
+) -> str:
+    result = run_git_command_for_repo(
+        repo_dir,
+        ["diff", "--binary", "HEAD", "--"] + list(pathspecs),
+        use_safe_git=use_safe_git,
+    )
+    if result.returncode != 0:
+        message = result.stderr.strip() or result.stdout.strip() or "git diff failed"
+        raise RuntimeError(message)
+    return result.stdout
+
+
+def git_diff_name_only_for_paths(
+    repo_dir: Path,
+    pathspecs: Iterable[str],
+    *,
+    use_safe_git: bool = True,
+) -> list[str]:
+    result = run_git_command_for_repo(
+        repo_dir,
+        ["diff", "--name-only", "HEAD", "--"] + list(pathspecs),
+        use_safe_git=use_safe_git,
+    )
+    if result.returncode != 0:
+        message = result.stderr.strip() or result.stdout.strip() or "git diff --name-only failed"
+        raise RuntimeError(message)
+    return sorted(path for path in result.stdout.splitlines() if path)
+
+
+def git_status_porcelain_for_paths(
+    repo_dir: Path,
+    pathspecs: Iterable[str],
+    *,
+    use_safe_git: bool = True,
+) -> str:
+    result = run_git_command_for_repo(
+        repo_dir,
+        ["status", "--porcelain=v1", "--untracked-files=all", "--"] + list(pathspecs),
+        use_safe_git=use_safe_git,
+    )
+    if result.returncode != 0:
+        message = result.stderr.strip() or result.stdout.strip() or "git status failed"
+        raise RuntimeError(message)
+    return result.stdout.strip()
+
+
+def parse_untracked_status_paths(status_text: str) -> list[str]:
+    paths = []
+    for line in status_text.splitlines():
+        if line.startswith("?? "):
+            paths.append(line[3:])
+    return sorted(paths)
+
+
+def compare_same_runtime_worktree(patch_paths: list[Path]) -> dict[str, Any]:
+    actual_diff = git_diff_head_for_paths(SAME_ROOT, SAME_RUNTIME_DIFF_PATHS)
+    actual_paths = git_diff_name_only_for_paths(SAME_ROOT, SAME_RUNTIME_DIFF_PATHS)
+    actual_status = git_status_porcelain_for_paths(SAME_ROOT, SAME_RUNTIME_DIFF_PATHS)
+    untracked_paths = parse_untracked_status_paths(actual_status)
+
+    with tempfile.TemporaryDirectory(prefix="run-same-expected-") as temp_dir:
+        expected_repo = Path(temp_dir) / "SAME"
+        clone = run_shell_command(
+            ["git", "clone", "--quiet", "--no-hardlinks", str(SAME_ROOT), str(expected_repo)],
+            REPO_ROOT,
+        )
+        if clone.returncode != 0:
+            message = clone.stderr.strip() or clone.stdout.strip() or "git clone failed"
+            raise RuntimeError(f"无法创建 SAME provenance 临时树: {message}")
+
+        for patch_path in patch_paths:
+            apply_patch_to_repo(expected_repo, patch_path, use_safe_git=False)
+
+        expected_diff = git_diff_head_for_paths(expected_repo, SAME_RUNTIME_DIFF_PATHS, use_safe_git=False)
+        expected_paths = git_diff_name_only_for_paths(expected_repo, SAME_RUNTIME_DIFF_PATHS, use_safe_git=False)
+
+    diff_matches = actual_diff == expected_diff
+    path_delta = set(actual_paths) ^ set(expected_paths)
+    manual_paths = sorted(path_delta | set(untracked_paths))
+    if not diff_matches and not manual_paths:
+        manual_paths = actual_paths or expected_paths
+
+    return {
+        "manual_worktree": (not diff_matches) or bool(untracked_paths),
+        "runtime_pathspecs": list(SAME_RUNTIME_DIFF_PATHS),
+        "actual_diff_sha256": text_sha256(actual_diff),
+        "expected_diff_sha256": text_sha256(expected_diff),
+        "actual_changed_paths": actual_paths,
+        "expected_changed_paths": expected_paths,
+        "manual_worktree_paths": manual_paths,
+        "untracked_runtime_paths": untracked_paths,
+    }
+
+
+def build_provenance(
+    *,
+    patch_paths: list[Path],
+    config_path: Path,
+    git_info_path: Path,
+    patch_diff_path: Path,
+) -> dict[str, Any]:
+    runtime_status, external_paths = read_git_status_for_paths(
+        REPO_ROOT,
+        [Path(__file__).resolve(), config_path, *patch_paths],
+    )
+    same_runtime = compare_same_runtime_worktree(patch_paths)
+
+    return {
+        "repo_dirty": read_git_status(REPO_ROOT) != "<clean>",
+        "same_dirty": read_git_status(SAME_ROOT) != "<clean>",
+        "runtime_dirty": bool(runtime_status or external_paths),
+        "manual_worktree": bool(same_runtime["manual_worktree"]),
+        "runtime_status": runtime_status.splitlines() if runtime_status and runtime_status != "<unavailable>" else [],
+        "runtime_status_unavailable": runtime_status == "<unavailable>",
+        "runtime_external_paths": external_paths,
+        "same_runtime": same_runtime,
+        "artifacts": {
+            "git_info": repo_rel(git_info_path),
+            "patch_diff": repo_rel(patch_diff_path),
+        },
+    }
+
+
+def safe_build_provenance(
+    *,
+    patch_paths: list[Path],
+    config_path: Path,
+    git_info_path: Path,
+    patch_diff_path: Path,
+) -> dict[str, Any]:
+    try:
+        return build_provenance(
+            patch_paths=patch_paths,
+            config_path=config_path,
+            git_info_path=git_info_path,
+            patch_diff_path=patch_diff_path,
+        )
+    except Exception as exc:
+        return {
+            "provenance_error": str(exc),
+            "artifacts": {
+                "git_info": repo_rel(git_info_path),
+                "patch_diff": repo_rel(patch_diff_path),
+            },
+        }
+
+
+def manual_worktree_warning(provenance: dict[str, Any]) -> str | None:
+    if not provenance.get("manual_worktree"):
+        return None
+    same_runtime = provenance.get("same_runtime", {})
+    paths = same_runtime.get("manual_worktree_paths") or []
+    path_summary = ", ".join(paths[:8])
+    if len(paths) > 8:
+        path_summary += f", ...(+{len(paths) - 8})"
+    suffix = f" 涉及路径: {path_summary}" if path_summary else ""
+    return (
+        "third_party/SAME/src 存在未被声明 patch_set 覆盖的运行代码改动。"
+        "请把这些改动整理为 --experimental-patch，或确认本次只是 exploratory run。"
+        f"{suffix}"
+    )
 
 
 def python_cuda_info(python_executable: str) -> str:
@@ -1046,6 +1375,8 @@ def build_run_json(
     finished_at: dt.datetime | None,
     warnings: list[str],
     patch_set: list[str],
+    patch_manifest: list[dict[str, str]] | None,
+    provenance: dict[str, Any] | None,
     run_type: str,
 ) -> dict[str, Any]:
     finished = finished_at or started_at
@@ -1065,6 +1396,8 @@ def build_run_json(
         "seed": get_in(config, "experiment", "seed"),
         "checkpoint": get_in(config, "experiment", "resume_file"),
         "patch_set": patch_set,
+        "patch_manifest": patch_manifest or [],
+        "provenance": provenance or {},
         "repo_commit": read_git_commit(REPO_ROOT),
         "child_repo_commit": read_git_commit(SAME_ROOT),
         "workdir": repo_rel(SAME_SRC_DIR),
@@ -1112,13 +1445,17 @@ def checkpoint_tag_from_config(config: dict[str, Any]) -> str:
     return slugify(Path(str(checkpoint)).stem)
 
 
-def apply_same_patches(stderr_path: Path) -> None:
-    command = ["bash", str(PATCH_SCRIPT), "--method", "same"]
-    result = run_shell_command(command, REPO_ROOT)
-    if result.returncode != 0:
-        message = result.stderr.strip() or result.stdout.strip() or "apply_patches.sh failed"
-        append_stderr_message(stderr_path, f"应用 SAME patches 失败: {message}")
-        raise RuntimeError("无法应用 SAME base patches")
+def apply_same_patches(patch_paths: list[Path], stderr_path: Path) -> None:
+    for patch_path in patch_paths:
+        try:
+            state = apply_patch_to_repo(SAME_ROOT, patch_path)
+        except RuntimeError as exc:
+            append_stderr_message(stderr_path, f"应用 SAME patch 失败: {exc}")
+            raise RuntimeError("无法应用 SAME patches") from exc
+        if state == "applied":
+            print(f"[runner] Applied {repo_rel(patch_path)} -> {repo_rel(SAME_ROOT)}", file=sys.stderr)
+        else:
+            print(f"[runner] Skipped {repo_rel(patch_path)}: patch already applied", file=sys.stderr)
 
 
 def build_same_command(config_path: Path, user_overrides: list[str], experiment_id: str) -> list[str]:
@@ -1148,6 +1485,10 @@ def main() -> int:
     config_path = Path(args.config)
     if not config_path.is_absolute():
         config_path = (REPO_ROOT / config_path).resolve()
+
+    patch_paths = build_patch_paths(args.experimental_patch)
+    patch_set = patch_set_from_paths(patch_paths)
+    patch_manifest = build_patch_manifest(patch_paths)
 
     user_overrides = build_user_overrides(args)
     config = load_same_config(config_path, user_overrides)
@@ -1181,13 +1522,11 @@ def main() -> int:
     data_manifest_path = experiment_dir / "data_manifest.txt"
 
     warnings: list[str] = []
-    patch_set = build_patch_set()
+    provenance: dict[str, Any] = {}
     started_at = now_local()
     run_type = infer_run_type(config)
 
     dump_yaml(config_resolved_path, config)
-    write_text(git_info_path, build_git_info_text())
-    write_text(patch_diff_path, build_patch_diff_text())
     write_text(gpu_info_path, build_gpu_info_text(sys.executable))
     write_text(data_manifest_path, build_data_manifest(config))
 
@@ -1205,6 +1544,8 @@ def main() -> int:
             finished_at=None,
             warnings=warnings,
             patch_set=patch_set,
+            patch_manifest=patch_manifest,
+            provenance=provenance,
             run_type=run_type,
         ),
     )
@@ -1213,7 +1554,21 @@ def main() -> int:
     status = "failed"
 
     try:
-        apply_same_patches(stderr_path)
+        apply_same_patches(patch_paths, stderr_path)
+        write_text(git_info_path, build_git_info_text())
+        write_text(patch_diff_path, build_patch_diff_text())
+        provenance = build_provenance(
+            patch_paths=patch_paths,
+            config_path=config_path,
+            git_info_path=git_info_path,
+            patch_diff_path=patch_diff_path,
+        )
+        manual_warning = manual_worktree_warning(provenance)
+        if manual_warning:
+            if args.fail_on_manual_worktree:
+                raise RuntimeError(manual_warning)
+            warnings.append(manual_warning)
+
         command = build_same_command(config_path, user_overrides, experiment_id)
         write_run_json(
             run_json_path,
@@ -1229,6 +1584,8 @@ def main() -> int:
                 finished_at=None,
                 warnings=warnings,
                 patch_set=patch_set,
+                patch_manifest=patch_manifest,
+                provenance=provenance,
                 run_type=run_type,
             ),
         )
@@ -1246,6 +1603,18 @@ def main() -> int:
         warnings.append(str(exc))
         append_stderr_message(stderr_path, str(exc))
     finally:
+        if not git_info_path.exists():
+            write_text(git_info_path, build_git_info_text())
+        if not patch_diff_path.exists():
+            write_text(patch_diff_path, build_patch_diff_text())
+        if not provenance:
+            provenance = safe_build_provenance(
+                patch_paths=patch_paths,
+                config_path=config_path,
+                git_info_path=git_info_path,
+                patch_diff_path=patch_diff_path,
+            )
+
         metrics = parse_metrics_from_log(same_log_path)
         warnings.extend(cross_check_result_metrics(experiment_dir, metrics))
         warnings.extend(build_metric_semantic_warnings(config, metrics))
@@ -1278,6 +1647,8 @@ def main() -> int:
                 finished_at=finished_at,
                 warnings=deduped_warnings,
                 patch_set=patch_set,
+                patch_manifest=patch_manifest,
+                provenance=provenance,
                 run_type=run_type,
             ),
         )
