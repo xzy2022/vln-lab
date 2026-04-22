@@ -38,6 +38,17 @@ class BuildSameFineMetricsTests(unittest.TestCase):
                         dataset="CVDN",
                         internal_item_id="cvdn_1",
                         raw_action_steps=None,
+                        raw_extra={
+                            "oracle_plan_errors": 2.0,
+                            "dist_to_end_reductions": 4.0,
+                            "spl": 0.5,
+                        },
+                        canonical_extra={
+                            "final_distance_m": 1.0,
+                            "min_distance_along_trajectory_m": 1.0,
+                            "final_success": True,
+                            "oracle_success": True,
+                        },
                         trajectory=["A", "B", "C"],
                         pred_path_segments=[["A"], ["B"], ["C"]],
                         region_extras={"cvdn": {"end_panos": ["B"]}},
@@ -47,10 +58,22 @@ class BuildSameFineMetricsTests(unittest.TestCase):
 
             manifest = fine_metrics.build_fine_metrics(experiment_dir, connectivity_dir, output_dir)
 
+            self.assertEqual(manifest["schema_version"], "same_fine_metrics.v2")
+            self.assertEqual(
+                manifest["metric_groups"],
+                [
+                    "common",
+                    "eval_end_goal",
+                    "eval_end_region",
+                    "eval_end_region_threshold",
+                    "official",
+                ],
+            )
             self.assertEqual(manifest["counts"]["items"], 1)
             rows = read_jsonl(output_dir / "jsonl" / "CVDN_val_unseen_fine_metrics.jsonl")
             self.assertEqual(len(rows), 1)
             row = rows[0]
+            self.assertEqual(row["schema_version"], "same_fine_metrics.v2")
 
             self.assertEqual(row["common"]["action_step_count"], 2)
             self.assertEqual(row["common"]["move_step_count"], 2)
@@ -80,10 +103,27 @@ class BuildSameFineMetricsTests(unittest.TestCase):
             self.assertAlmostEqual(region["oracle_path_length_m"], 1.0)
             self.assertEqual(region["oracle_path_edge_count"], 1)
 
+            region_threshold = row["eval_end_region_threshold"]
+            self.assertTrue(region_threshold["final_success"])
+            self.assertTrue(region_threshold["oracle_success"])
+            self.assertAlmostEqual(region_threshold["final_distance_to_goal_m"], 1.0)
+            self.assertAlmostEqual(region_threshold["oracle_path_length_m"], 0.0)
+            self.assertEqual(region_threshold["oracle_path_edge_count"], 0)
+
+            official = row["official"]
+            self.assertTrue(official["final_success"])
+            self.assertTrue(official["oracle_success"])
+            self.assertTrue(official["oracle_plan_success"])
+            self.assertAlmostEqual(official["oracle_plan_distance_m"], 2.0)
+            self.assertAlmostEqual(official["dist_to_end_reduction_m"], 4.0)
+            self.assertAlmostEqual(official["spl"], 0.5)
+
             wide_rows = read_csv(output_dir / "tables" / "fine_metrics_wide.csv")
             self.assertEqual(wide_rows[0]["common.action_step_count"], "2")
             self.assertEqual(wide_rows[0]["eval_end_goal.final_success"], "true")
             self.assertEqual(wide_rows[0]["eval_end_region.final_success"], "false")
+            self.assertEqual(wide_rows[0]["eval_end_region_threshold.final_success"], "true")
+            self.assertEqual(wide_rows[0]["official.oracle_plan_success"], "true")
 
             long_rows = read_csv(output_dir / "tables" / "fine_metrics_long.csv")
             self.assertIn(
@@ -97,6 +137,20 @@ class BuildSameFineMetricsTests(unittest.TestCase):
                     "value_num": "2",
                     "value_bool": "",
                     "value_type": "num",
+                },
+                long_rows,
+            )
+            self.assertIn(
+                {
+                    "experiment_id": "0001_same_demo",
+                    "dataset": "CVDN",
+                    "split": "val_unseen",
+                    "internal_item_id": "cvdn_1",
+                    "metric_group": "eval_end_region_threshold",
+                    "metric_name": "final_success",
+                    "value_num": "",
+                    "value_bool": "true",
+                    "value_type": "bool",
                 },
                 long_rows,
             )
@@ -134,6 +188,13 @@ class BuildSameFineMetricsTests(unittest.TestCase):
                         dataset="R2R",
                         internal_item_id="r2r_1",
                         raw_action_steps=8,
+                        raw_extra={"oracle_success": True},
+                        canonical_extra={
+                            "final_distance_m": 2.0,
+                            "min_distance_along_trajectory_m": 2.0,
+                            "final_success": True,
+                            "oracle_success": True,
+                        },
                         trajectory=["A", "A", "B"],
                         pred_path_segments=[["A"], ["A"], ["B"]],
                         region_extras={},
@@ -147,9 +208,55 @@ class BuildSameFineMetricsTests(unittest.TestCase):
             self.assertEqual(row["common"]["action_step_count"], 8)
             self.assertEqual(row["common"]["move_step_count"], 1)
             self.assertIsNone(row["eval_end_region"])
+            self.assertIsNone(row["eval_end_region_threshold"])
 
             wide_row = read_csv(output_dir / "tables" / "fine_metrics_wide.csv")[0]
             self.assertEqual(wide_row["eval_end_region.final_success"], "")
+            self.assertEqual(wide_row["eval_end_region_threshold.final_success"], "")
+
+    def test_reverie_official_uses_region_success_and_nav_goal_distance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            experiment_dir = tmp / "experiment_outputs" / "0003_same_demo"
+            eval_items_dir = experiment_dir / "eval_items"
+            connectivity_dir = tmp / "connectivity"
+            output_dir = tmp / "fine_metrics"
+            eval_items_dir.mkdir(parents=True)
+            connectivity_dir.mkdir()
+
+            write_connectivity(connectivity_dir / "scan1_connectivity.json")
+            write_context(eval_items_dir, "REVERIE", "val_unseen", "REVERIE_val_unseen_eval_items.jsonl")
+            write_jsonl(
+                eval_items_dir / "REVERIE_val_unseen_eval_items.jsonl",
+                [
+                    minimal_eval_item(
+                        dataset="REVERIE",
+                        internal_item_id="reverie_1",
+                        raw_action_steps=2,
+                        raw_extra={"success": False, "oracle_success": True, "spl": 0.0},
+                        canonical_extra={
+                            "final_distance_m": 1.0,
+                            "min_distance_along_trajectory_m": 1.0,
+                            "final_success": False,
+                            "oracle_success": True,
+                        },
+                        trajectory=["A", "B", "C"],
+                        pred_path_segments=[["A"], ["B"], ["C"]],
+                        region_extras={"reverie": {"visible_viewpoints": ["B"]}},
+                    )
+                ],
+            )
+
+            fine_metrics.build_fine_metrics(experiment_dir, connectivity_dir, output_dir)
+
+            row = read_jsonl(output_dir / "jsonl" / "REVERIE_val_unseen_fine_metrics.jsonl")[0]
+            official = row["official"]
+            self.assertFalse(official["final_success"])
+            self.assertTrue(official["oracle_success"])
+            self.assertAlmostEqual(official["final_distance_to_goal_m"], 1.0)
+            self.assertEqual(official["final_distance_to_goal_edges"], 1)
+            self.assertAlmostEqual(official["oracle_path_length_m"], 1.0)
+            self.assertEqual(official["oracle_path_edge_count"], 1)
 
     def test_real_0011_smoke_if_available(self) -> None:
         experiment_dir = (
@@ -164,6 +271,7 @@ class BuildSameFineMetricsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             output_dir = Path(tmpdir) / "fine_metrics"
             manifest = fine_metrics.build_fine_metrics(experiment_dir, connectivity_dir, output_dir)
+            self.assertEqual(manifest["schema_version"], "same_fine_metrics.v2")
             expected_items = sum(
                 count_lines(path)
                 for path in (experiment_dir / "eval_items").glob("*_eval_items.jsonl")
@@ -173,9 +281,35 @@ class BuildSameFineMetricsTests(unittest.TestCase):
             r2r_rows = read_jsonl(output_dir / "jsonl" / "R2R_val_unseen_fine_metrics.jsonl")
             self.assertGreater(len(r2r_rows), 0)
             self.assertIsNone(r2r_rows[0]["eval_end_region"])
+            self.assertIsNone(r2r_rows[0]["eval_end_region_threshold"])
             self.assertAlmostEqual(
                 r2r_rows[0]["eval_end_goal"]["final_distance_to_goal_m"],
                 5.163127264153355,
+            )
+            summary = json.loads((output_dir / "tables" / "fine_metrics_summary.json").read_text(encoding="utf-8"))
+            metrics = json.loads((experiment_dir / "metrics.json").read_text(encoding="utf-8"))["metrics"]
+            for key, values in summary["dataset_splits"].items():
+                dataset, split = key.split("/")
+                items = values["items"]
+                official_sr = values["official_final_successes"] / items * 100.0
+                official_osr = values["official_oracle_successes"] / items * 100.0
+                self.assertAlmostEqual(official_sr, metrics[dataset][split]["sr"]["value"], places=2)
+                self.assertAlmostEqual(official_osr, metrics[dataset][split]["oracle_sr"]["value"], places=2)
+                if values["region_items"]:
+                    self.assertGreaterEqual(
+                        values["region_threshold_final_successes"],
+                        values["region_final_successes"],
+                    )
+                    self.assertGreaterEqual(
+                        values["region_threshold_oracle_successes"],
+                        values["region_oracle_successes"],
+                    )
+            cvdn_summary = summary["dataset_splits"]["CVDN/val_unseen"]
+            cvdn_plan_sr = cvdn_summary["official_oracle_plan_successes"] / cvdn_summary["items"] * 100.0
+            self.assertAlmostEqual(
+                cvdn_plan_sr,
+                metrics["CVDN"]["val_unseen"]["oracle_path_success_rate"]["value"],
+                places=2,
             )
 
 
@@ -206,6 +340,8 @@ def minimal_eval_item(
     dataset: str,
     internal_item_id: str,
     raw_action_steps: int | None,
+    raw_extra: dict[str, object] | None,
+    canonical_extra: dict[str, object] | None,
     trajectory: list[str],
     pred_path_segments: list[list[str]],
     region_extras: dict[str, object],
@@ -216,6 +352,14 @@ def minimal_eval_item(
     }
     if raw_action_steps is not None:
         raw_same["action_steps"] = raw_action_steps
+    if raw_extra:
+        raw_same.update(raw_extra)
+    canonical = {
+        "actual_length_m": 2.0,
+        "shortest_path_length_m": 3.0,
+    }
+    if canonical_extra:
+        canonical.update(canonical_extra)
     return {
         "schema_version": "eval_items.v2",
         "identity": {
@@ -245,10 +389,7 @@ def minimal_eval_item(
         },
         "official_item_scores": {
             "raw_same": raw_same,
-            "canonical": {
-                "actual_length_m": 2.0,
-                "shortest_path_length_m": 3.0,
-            },
+            "canonical": canonical,
         },
         "dataset_extras": region_extras,
     }
