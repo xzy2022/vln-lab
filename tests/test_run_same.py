@@ -128,6 +128,98 @@ class RunSameTests(unittest.TestCase):
         self.assertIn("eval:R2R:val_unseen", manifest)
         self.assertNotIn("train:R2R:train", manifest)
 
+    def test_build_patch_paths_includes_explicit_experimental_patch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_root = Path(tmpdir)
+            base_dir = tmp_root / "patches" / "same" / "base"
+            experimental_dir = tmp_root / "patches" / "same" / "experimental"
+            base_dir.mkdir(parents=True)
+            experimental_dir.mkdir(parents=True)
+            base_patch = base_dir / "0001-base.patch"
+            experimental_patch = experimental_dir / "0002-experimental.patch"
+            base_patch.write_text("base\n", encoding="utf-8")
+            experimental_patch.write_text("experimental\n", encoding="utf-8")
+
+            original_base = run_same.PATCH_DIR
+            original_experimental = run_same.PATCH_EXPERIMENTAL_DIR
+            run_same.PATCH_DIR = base_dir
+            run_same.PATCH_EXPERIMENTAL_DIR = experimental_dir
+            try:
+                patch_paths = run_same.build_patch_paths([str(experimental_patch)])
+                manifest = run_same.build_patch_manifest(patch_paths)
+            finally:
+                run_same.PATCH_DIR = original_base
+                run_same.PATCH_EXPERIMENTAL_DIR = original_experimental
+
+        self.assertEqual([path.name for path in patch_paths], ["0001-base.patch", "0002-experimental.patch"])
+        self.assertEqual([entry["category"] for entry in manifest], ["base", "experimental"])
+        self.assertTrue(all(entry["sha256"] for entry in manifest))
+
+    def test_build_patch_paths_rejects_non_experimental_cli_patch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_root = Path(tmpdir)
+            experimental_dir = tmp_root / "patches" / "same" / "experimental"
+            other_dir = tmp_root / "patches" / "same" / "other"
+            experimental_dir.mkdir(parents=True)
+            other_dir.mkdir(parents=True)
+            other_patch = other_dir / "0002-other.patch"
+            other_patch.write_text("other\n", encoding="utf-8")
+
+            original_experimental = run_same.PATCH_EXPERIMENTAL_DIR
+            run_same.PATCH_EXPERIMENTAL_DIR = experimental_dir
+            try:
+                with self.assertRaises(ValueError):
+                    run_same.build_patch_paths([str(other_patch)])
+            finally:
+                run_same.PATCH_EXPERIMENTAL_DIR = original_experimental
+
+    def test_compare_same_runtime_worktree_allows_declared_patch_but_flags_extra_diff(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_root = Path(tmpdir)
+            same_repo = tmp_root / "SAME"
+            patch_path = tmp_root / "change-run.patch"
+            (same_repo / "src").mkdir(parents=True)
+            (same_repo / "src" / "run.py").write_text("old\n", encoding="utf-8")
+            subprocess.run(["git", "init", "-q"], cwd=same_repo, check=True)
+            subprocess.run(["git", "add", "src/run.py"], cwd=same_repo, check=True)
+            subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "user.email=tests@example.com",
+                    "-c",
+                    "user.name=Tests",
+                    "commit",
+                    "-qm",
+                    "init",
+                ],
+                cwd=same_repo,
+                check=True,
+            )
+            patch_path.write_text(
+                "diff --git a/src/run.py b/src/run.py\n"
+                "--- a/src/run.py\n"
+                "+++ b/src/run.py\n"
+                "@@ -1 +1 @@\n"
+                "-old\n"
+                "+new\n",
+                encoding="utf-8",
+            )
+
+            original_same_root = run_same.SAME_ROOT
+            run_same.SAME_ROOT = same_repo
+            try:
+                subprocess.run(["git", "apply", str(patch_path)], cwd=same_repo, check=True)
+                clean_result = run_same.compare_same_runtime_worktree([patch_path])
+                self.assertFalse(clean_result["manual_worktree"])
+
+                (same_repo / "src" / "run.py").write_text("new\nmanual\n", encoding="utf-8")
+                dirty_result = run_same.compare_same_runtime_worktree([patch_path])
+                self.assertTrue(dirty_result["manual_worktree"])
+                self.assertEqual(dirty_result["manual_worktree_paths"], ["src/run.py"])
+            finally:
+                run_same.SAME_ROOT = original_same_root
+
     def test_csv_helpers_reject_duplicate_metrics_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_metrics = Path(tmpdir) / "metrics_long.csv"
