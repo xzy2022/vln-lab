@@ -16,7 +16,7 @@ from typing import Any, Iterable
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONNECTIVITY_DIR = REPO_ROOT / "data" / "same" / "simulator" / "connectivity"
-SCHEMA_VERSION = "same_fine_metrics.v1"
+SCHEMA_VERSION = "same_fine_metrics.v2"
 EPS = 1e-9
 
 COMMON_METRICS = [
@@ -40,11 +40,48 @@ ENDPOINT_METRICS = [
     "shortest_path_edge_count",
 ]
 
+OFFICIAL_METRICS = [
+    "final_success",
+    "oracle_success",
+    "final_distance_to_goal_m",
+    "oracle_distance_to_goal_m",
+    "final_distance_to_goal_edges",
+    "path_length_m",
+    "path_length_ratio",
+    "oracle_path_length_m",
+    "oracle_path_edge_count",
+    "oracle_path_length_ratio",
+    "shortest_path_length_m",
+    "shortest_path_edge_count",
+    "spl",
+    "oracle_plan_success",
+    "oracle_plan_distance_m",
+    "dist_to_end_reduction_m",
+    "rgs",
+    "rgspl",
+    "det_success",
+    "det_spl",
+    "goal_progress_m",
+    "heading_error",
+    "elevation_error",
+    "point_det_error",
+]
+
+GROUP_METRICS = {
+    "common": COMMON_METRICS,
+    "eval_end_goal": ENDPOINT_METRICS,
+    "eval_end_region": ENDPOINT_METRICS,
+    "eval_end_region_threshold": ENDPOINT_METRICS,
+    "official": OFFICIAL_METRICS,
+}
+
 WIDE_FIELDNAMES = (
     ["experiment_id", "dataset", "split", "internal_item_id", "saved_instr_id"]
-    + [f"common.{name}" for name in COMMON_METRICS]
-    + [f"eval_end_goal.{name}" for name in ENDPOINT_METRICS]
-    + [f"eval_end_region.{name}" for name in ENDPOINT_METRICS]
+    + [
+        f"{group_name}.{metric_name}"
+        for group_name, metric_names in GROUP_METRICS.items()
+        for metric_name in metric_names
+    ]
 )
 
 LONG_FIELDNAMES = [
@@ -246,7 +283,7 @@ def build_fine_metrics(experiment_dir: Path, connectivity_dir: Path, output_dir:
         "source_eval_items_dir": path_to_string(eval_items_dir),
         "connectivity_dir": path_to_string(connectivity_dir),
         "output_dir": path_to_string(output_dir),
-        "metric_groups": ["common", "eval_end_goal", "eval_end_region"],
+        "metric_groups": list(GROUP_METRICS),
         "files": {
             "jsonl": [path_to_string(path) for path in output_jsonl_paths],
             "wide_csv": path_to_string(wide_path),
@@ -312,6 +349,8 @@ def build_fine_metric_row(
     common = build_common_metrics(item)
     eval_end_goal = build_goal_metrics(item, source, graph, common)
     eval_end_region = build_region_metrics(item, source, graph, common)
+    eval_end_region_threshold = build_region_threshold_metrics(item, source, graph, common)
+    official = build_official_metrics(item, source, graph, common)
     identity = item.get("identity", {})
 
     return {
@@ -327,6 +366,8 @@ def build_fine_metric_row(
         "common": common,
         "eval_end_goal": eval_end_goal,
         "eval_end_region": eval_end_region,
+        "eval_end_region_threshold": eval_end_region_threshold,
+        "official": official,
     }
 
 
@@ -448,6 +489,119 @@ def build_region_metrics(
     }
 
 
+def build_region_threshold_metrics(
+    item: dict[str, Any],
+    source: EvalItemSource,
+    graph: Graph,
+    common: dict[str, Any],
+) -> dict[str, Any] | None:
+    if source.dataset == "R2R":
+        return None
+
+    annotation = item.get("annotation", {})
+    primitives = item.get("primitives", {})
+    trajectory = item.get("prediction", {}).get("trajectory") or []
+    cumulative_lengths = primitives.get("trajectory_cumulative_lengths_m") or []
+    targets = region_targets(item, source.dataset)
+    if not targets:
+        return endpoint_null_metrics()
+
+    start_viewpoint = annotation.get("start_viewpoint")
+    final_viewpoint = trajectory[-1] if trajectory else primitives.get("final_viewpoint")
+    graph_final_distance_m, final_edges, _ = graph.nearest(final_viewpoint, targets)
+    shortest_path_length_m, shortest_path_edge_count, _ = graph.nearest(start_viewpoint, targets)
+
+    distances_by_step = primitives.get(region_distance_primitive_key(source.dataset)) or []
+    final_distance_m = last_or_none(distances_by_step)
+    if final_distance_m is None:
+        final_distance_m = graph_final_distance_m
+    if not distances_by_step:
+        distances_by_step = [graph.nearest(viewpoint, targets)[0] for viewpoint in trajectory]
+    oracle_index = first_index_below_threshold(distances_by_step, source.success_threshold_m)
+    oracle_path_length_m = cumulative_at(cumulative_lengths, oracle_index)
+    oracle_path_edge_count = move_count_until(trajectory, oracle_index)
+
+    return {
+        "final_success": bool(final_distance_m is not None and final_distance_m < source.success_threshold_m),
+        "oracle_success": oracle_index is not None,
+        "final_distance_to_goal_m": final_distance_m,
+        "final_distance_to_goal_edges": final_edges,
+        "path_length_ratio": ratio(common.get("path_length_m"), shortest_path_length_m),
+        "oracle_path_length_m": oracle_path_length_m,
+        "oracle_path_edge_count": oracle_path_edge_count,
+        "oracle_path_length_ratio": ratio(oracle_path_length_m, shortest_path_length_m),
+        "shortest_path_length_m": shortest_path_length_m,
+        "shortest_path_edge_count": shortest_path_edge_count,
+    }
+
+
+def build_official_metrics(
+    item: dict[str, Any],
+    source: EvalItemSource,
+    graph: Graph,
+    common: dict[str, Any],
+) -> dict[str, Any]:
+    annotation = item.get("annotation", {})
+    primitives = item.get("primitives", {})
+    prediction = item.get("prediction", {})
+    trajectory = prediction.get("trajectory") or []
+    cumulative_lengths = primitives.get("trajectory_cumulative_lengths_m") or []
+    official_scores = item.get("official_item_scores", {})
+    raw_same = official_scores.get("raw_same", {})
+    canonical = official_scores.get("canonical", {})
+
+    final_viewpoint = trajectory[-1] if trajectory else primitives.get("final_viewpoint")
+    start_viewpoint = annotation.get("start_viewpoint")
+    distance_goal = official_distance_goal_viewpoint(source.dataset, annotation)
+    final_distance_edges = graph.shortest(final_viewpoint, distance_goal)[1]
+    shortest_distance_m = canonical.get("shortest_path_length_m")
+    shortest_graph_distance, shortest_path_edge_count = graph.shortest(start_viewpoint, distance_goal)
+    if shortest_distance_m is None:
+        shortest_distance_m = shortest_graph_distance
+
+    oracle_index = official_oracle_index(item, source)
+    oracle_path_length_m = cumulative_at(cumulative_lengths, oracle_index)
+    oracle_path_edge_count = move_count_until(trajectory, oracle_index)
+    path_length_m = canonical.get("actual_length_m")
+    if path_length_m is None:
+        path_length_m = raw_same.get("trajectory_lengths")
+    if path_length_m is None:
+        path_length_m = common.get("path_length_m")
+
+    oracle_plan_distance_m = raw_same.get("oracle_plan_errors")
+
+    return {
+        "final_success": bool_or_none(canonical.get("final_success", raw_same.get("success"))),
+        "oracle_success": bool_or_none(canonical.get("oracle_success", raw_same.get("oracle_success"))),
+        "final_distance_to_goal_m": canonical.get("final_distance_m"),
+        "oracle_distance_to_goal_m": canonical.get("min_distance_along_trajectory_m"),
+        "final_distance_to_goal_edges": final_distance_edges,
+        "path_length_m": path_length_m,
+        "path_length_ratio": ratio(path_length_m, shortest_distance_m),
+        "oracle_path_length_m": oracle_path_length_m,
+        "oracle_path_edge_count": oracle_path_edge_count,
+        "oracle_path_length_ratio": ratio(oracle_path_length_m, shortest_distance_m),
+        "shortest_path_length_m": shortest_distance_m,
+        "shortest_path_edge_count": shortest_path_edge_count,
+        "spl": raw_same.get("spl"),
+        "oracle_plan_success": (
+            None
+            if oracle_plan_distance_m is None
+            else bool(oracle_plan_distance_m < source.success_threshold_m)
+        ),
+        "oracle_plan_distance_m": oracle_plan_distance_m,
+        "dist_to_end_reduction_m": raw_same.get("dist_to_end_reductions"),
+        "rgs": raw_same.get("rgs"),
+        "rgspl": raw_same.get("rgspl"),
+        "det_success": bool_or_none(raw_same.get("det_success")),
+        "det_spl": raw_same.get("det_spl"),
+        "goal_progress_m": raw_same.get("goal_progress"),
+        "heading_error": raw_same.get("heading_error"),
+        "elevation_error": raw_same.get("elevation_error"),
+        "point_det_error": raw_same.get("point_det_error"),
+    }
+
+
 def region_targets(item: dict[str, Any], dataset: str) -> list[str]:
     extras = item.get("dataset_extras", {})
     if dataset == "CVDN":
@@ -457,6 +611,31 @@ def region_targets(item: dict[str, Any], dataset: str) -> list[str]:
     if dataset == "SOON":
         return list(extras.get("soon", {}).get("bbox_viewpoints") or [])
     return []
+
+
+def region_distance_primitive_key(dataset: str) -> str:
+    if dataset == "CVDN":
+        return "distance_to_nearest_end_pano_by_step_m"
+    if dataset == "REVERIE":
+        return "distance_to_nearest_success_target_by_step_m"
+    if dataset == "SOON":
+        return "distance_to_nearest_bbox_viewpoint_by_step_m"
+    return ""
+
+
+def official_distance_goal_viewpoint(dataset: str, annotation: dict[str, Any]) -> str | None:
+    if dataset == "SOON":
+        return (annotation.get("gt_path") or [None])[-1]
+    return annotation.get("nav_goal_viewpoint")
+
+
+def official_oracle_index(item: dict[str, Any], source: EvalItemSource) -> int | None:
+    trajectory = item.get("prediction", {}).get("trajectory") or []
+    primitives = item.get("primitives", {})
+    if source.dataset == "REVERIE":
+        return first_index_in_targets(trajectory, set(region_targets(item, source.dataset)))
+    distances_by_step = primitives.get("distance_to_nav_goal_by_step_m") or []
+    return first_index_below_threshold(distances_by_step, source.success_threshold_m)
 
 
 def endpoint_null_metrics() -> dict[str, Any]:
@@ -475,7 +654,7 @@ def move_count_until(trajectory: list[str], index: int | None) -> int | None:
 
 def first_index_below_threshold(values: list[float], threshold: float) -> int | None:
     for index, value in enumerate(values):
-        if value < threshold:
+        if value is not None and value < threshold:
             return index
     return None
 
@@ -512,6 +691,12 @@ def ratio(numerator: Any, denominator: Any) -> float | None:
     return float(numerator) / denominator
 
 
+def bool_or_none(value: Any) -> bool | None:
+    if value is None:
+        return None
+    return bool(value)
+
+
 def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
     with path.open("w", encoding="utf-8") as handle:
         for row in rows:
@@ -542,11 +727,7 @@ def flatten_wide_row(row: dict[str, Any]) -> dict[str, str]:
         "internal_item_id": csv_value(identity.get("internal_item_id")),
         "saved_instr_id": csv_value(identity.get("saved_instr_id")),
     }
-    for group_name, metric_names in (
-        ("common", COMMON_METRICS),
-        ("eval_end_goal", ENDPOINT_METRICS),
-        ("eval_end_region", ENDPOINT_METRICS),
-    ):
+    for group_name, metric_names in GROUP_METRICS.items():
         group = row.get(group_name) or {}
         for metric_name in metric_names:
             output[f"{group_name}.{metric_name}"] = csv_value(group.get(metric_name))
@@ -570,11 +751,7 @@ def iter_long_rows(row: dict[str, Any]) -> Iterable[dict[str, str]]:
         "split": csv_value(row.get("split")),
         "internal_item_id": csv_value(identity.get("internal_item_id")),
     }
-    for group_name, metric_names in (
-        ("common", COMMON_METRICS),
-        ("eval_end_goal", ENDPOINT_METRICS),
-        ("eval_end_region", ENDPOINT_METRICS),
-    ):
+    for group_name, metric_names in GROUP_METRICS.items():
         group = row.get(group_name)
         if group is None:
             continue
@@ -628,6 +805,12 @@ def build_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 "region_items": 0,
                 "region_final_successes": 0,
                 "region_oracle_successes": 0,
+                "region_threshold_items": 0,
+                "region_threshold_final_successes": 0,
+                "region_threshold_oracle_successes": 0,
+                "official_final_successes": 0,
+                "official_oracle_successes": 0,
+                "official_oracle_plan_successes": 0,
             },
         )
         summary["items"] += 1
@@ -639,6 +822,15 @@ def build_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
             summary["region_items"] += 1
             summary["region_final_successes"] += int(bool(region.get("final_success")))
             summary["region_oracle_successes"] += int(bool(region.get("oracle_success")))
+        region_threshold = row.get("eval_end_region_threshold")
+        if region_threshold is not None:
+            summary["region_threshold_items"] += 1
+            summary["region_threshold_final_successes"] += int(bool(region_threshold.get("final_success")))
+            summary["region_threshold_oracle_successes"] += int(bool(region_threshold.get("oracle_success")))
+        official = row.get("official") or {}
+        summary["official_final_successes"] += int(bool(official.get("final_success")))
+        summary["official_oracle_successes"] += int(bool(official.get("oracle_success")))
+        summary["official_oracle_plan_successes"] += int(bool(official.get("oracle_plan_success")))
     return {
         "schema_version": SCHEMA_VERSION,
         "items": len(rows),
