@@ -37,12 +37,44 @@ DEFAULT_FINE_METRICS_DIR = (
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "reports" / "artifacts" / "plots"
 
 DATASET_ORDER = ["R2R", "REVERIE", "CVDN", "SOON"]
+SPLIT_ORDER = [
+    "val_train_seen",
+    "val_seen",
+    "val_unseen",
+    "train_seen",
+    "seen",
+    "unseen",
+    "test_seen",
+    "test_unseen",
+]
 DATASET_COLORS = {
     "R2R": "#4C72B0",
     "REVERIE": "#55A868",
     "CVDN": "#C44E52",
     "SOON": "#DD8452",
 }
+DATASET_SPLIT_COLORS = {
+    ("R2R", "val_train_seen"): "#2F5597",
+    ("R2R", "val_seen"): "#4C72B0",
+    ("R2R", "val_unseen"): "#8FB3E2",
+    ("REVERIE", "val_train_seen"): "#2E7D46",
+    ("REVERIE", "val_seen"): "#55A868",
+    ("REVERIE", "val_unseen"): "#9BD29F",
+    ("CVDN", "val_seen"): "#C44E52",
+    ("CVDN", "val_unseen"): "#E08A8D",
+    ("SOON", "val_seen"): "#DD8452",
+    ("SOON", "val_unseen"): "#F0B37E",
+}
+FALLBACK_COLORS = [
+    "#4C72B0",
+    "#DD8452",
+    "#55A868",
+    "#C44E52",
+    "#8172B2",
+    "#937860",
+    "#64B5CD",
+    "#8C8C8C",
+]
 METRIC_STYLES = {
     "SR": {"linestyle": "-", "marker": "o"},
     "OSR": {"linestyle": "--", "marker": "s"},
@@ -118,7 +150,7 @@ class Bin:
 @dataclass(frozen=True)
 class CurvePoint:
     x_name: str
-    dataset: str
+    group: str
     metric: str
     bin_label: str
     x_center: float
@@ -128,7 +160,7 @@ class CurvePoint:
 
 @dataclass(frozen=True)
 class SummaryRecord:
-    dataset: str
+    group: str
     items: int
     sr_pct: float
     osr_pct: float
@@ -152,6 +184,24 @@ def parse_args() -> argparse.Namespace:
         "--output-dir",
         default=str(DEFAULT_OUTPUT_DIR),
         help="Directory where plots and summary files will be written.",
+    )
+    parser.add_argument(
+        "--split",
+        action="append",
+        default=[],
+        help=(
+            "Split(s) to include, for example --split val_unseen. "
+            "May be repeated or comma-separated. Defaults to all available splits."
+        ),
+    )
+    parser.add_argument(
+        "--group-by",
+        choices=("auto", "dataset", "dataset_split"),
+        default="auto",
+        help=(
+            "Grouping for curves and bars. auto uses dataset_split when a dataset has "
+            "multiple selected splits, otherwise dataset."
+        ),
     )
     parser.add_argument(
         "--bin-count",
@@ -237,13 +287,6 @@ def parse_float(value: str | None) -> float | None:
     return None
 
 
-def ordered_datasets(rows: Iterable[FineMetricRow]) -> list[str]:
-    available = {row.dataset for row in rows}
-    ordered = [dataset for dataset in DATASET_ORDER if dataset in available]
-    ordered.extend(sorted(available - set(ordered)))
-    return ordered
-
-
 def experiment_id_from_rows(rows: list[FineMetricRow]) -> str:
     ids = sorted({row.experiment_id for row in rows if row.experiment_id})
     if not ids:
@@ -251,6 +294,94 @@ def experiment_id_from_rows(rows: list[FineMetricRow]) -> str:
     if len(ids) == 1:
         return ids[0]
     return "mixed_experiments"
+
+
+def parse_split_filters(raw_values: list[str]) -> list[str]:
+    filters: list[str] = []
+    seen: set[str] = set()
+    for raw_value in raw_values:
+        for chunk in raw_value.replace(";", ",").split(","):
+            split = chunk.strip()
+            if not split or split in seen:
+                continue
+            filters.append(split)
+            seen.add(split)
+    return filters
+
+
+def filter_rows_by_split(rows: list[FineMetricRow], split_filters: list[str]) -> list[FineMetricRow]:
+    if not split_filters:
+        return rows
+    filtered = [row for row in rows if row.split in split_filters]
+    if not filtered:
+        available = ", ".join(sorted({row.split for row in rows}))
+        requested = ", ".join(split_filters)
+        raise ValueError(f"No rows matched --split {requested}. Available splits: {available}")
+    return filtered
+
+
+def resolve_group_by(rows: list[FineMetricRow], requested_group_by: str) -> str:
+    if requested_group_by != "auto":
+        return requested_group_by
+    splits_by_dataset: dict[str, set[str]] = {}
+    for row in rows:
+        splits_by_dataset.setdefault(row.dataset, set()).add(row.split)
+    if any(len(splits) > 1 for splits in splits_by_dataset.values()):
+        return "dataset_split"
+    return "dataset"
+
+
+def group_label(row: FineMetricRow, group_by: str) -> str:
+    if group_by == "dataset":
+        return row.dataset
+    return f"{row.dataset}-{row.split.replace('_', '-')}"
+
+
+def group_sort_key(label: str) -> tuple[int, int, str]:
+    if "-" not in label:
+        dataset = label
+        split = ""
+    else:
+        dataset, split_label = label.split("-", 1)
+        split = split_label.replace("-", "_")
+    dataset_rank = DATASET_ORDER.index(dataset) if dataset in DATASET_ORDER else len(DATASET_ORDER)
+    split_rank = SPLIT_ORDER.index(split) if split in SPLIT_ORDER else len(SPLIT_ORDER)
+    return dataset_rank, split_rank, label
+
+
+def ordered_groups(rows: Iterable[FineMetricRow], group_by: str) -> list[str]:
+    labels = {group_label(row, group_by) for row in rows}
+    return sorted(labels, key=group_sort_key)
+
+
+def build_group_colors(rows: list[FineMetricRow], group_by: str) -> dict[str, str]:
+    colors: dict[str, str] = {}
+    if group_by == "dataset":
+        for group in ordered_groups(rows, group_by):
+            colors[group] = DATASET_COLORS.get(
+                group,
+                FALLBACK_COLORS[len(colors) % len(FALLBACK_COLORS)],
+            )
+        return colors
+
+    for row in rows:
+        label = group_label(row, group_by)
+        if label in colors:
+            continue
+        colors[label] = DATASET_SPLIT_COLORS.get(
+            (row.dataset, row.split),
+            FALLBACK_COLORS[len(colors) % len(FALLBACK_COLORS)],
+        )
+    return colors
+
+
+def run_label(experiment_id: str, group_by: str, split_filters: list[str]) -> str:
+    if split_filters:
+        split_part = "_".join(split_filters)
+        return f"{experiment_id}_{split_part}"
+    if group_by == "dataset_split":
+        return f"{experiment_id}_by_split"
+    return experiment_id
 
 
 def success_value(row: FineMetricRow, metric: str) -> float | None:
@@ -365,16 +496,17 @@ def aggregate_curve_points(
     x_column: str,
     bin_count: int,
     min_bin_items: int,
+    group_by: str,
 ) -> list[CurvePoint]:
     bins = build_bins(rows, x_column, bin_count)
     points: list[CurvePoint] = []
 
-    for dataset in ordered_datasets(rows):
-        dataset_rows = [row for row in rows if row.dataset == dataset]
+    for group in ordered_groups(rows, group_by):
+        group_rows = [row for row in rows if group_label(row, group_by) == group]
         for metric in ("SR", "OSR"):
             grouped: dict[str, list[float]] = {item.label: [] for item in bins}
             centers = {item.label: item.center for item in bins}
-            for row in dataset_rows:
+            for row in group_rows:
                 x_value = parse_float(row.values.get(x_column))
                 y_value = success_value(row, metric)
                 if x_value is None or y_value is None:
@@ -391,7 +523,7 @@ def aggregate_curve_points(
                 points.append(
                     CurvePoint(
                         x_name=x_name,
-                        dataset=dataset,
+                        group=group,
                         metric=metric,
                         bin_label=bin_item.label,
                         x_center=centers[bin_item.label],
@@ -403,34 +535,34 @@ def aggregate_curve_points(
     return points
 
 
-def build_summary_records(rows: list[FineMetricRow]) -> list[SummaryRecord]:
+def build_summary_records(rows: list[FineMetricRow], group_by: str) -> list[SummaryRecord]:
     records: list[SummaryRecord] = []
-    for dataset in ordered_datasets(rows):
-        dataset_rows = [row for row in rows if row.dataset == dataset]
+    for group in ordered_groups(rows, group_by):
+        group_rows = [row for row in rows if group_label(row, group_by) == group]
         sr_values = [
             value
-            for row in dataset_rows
+            for row in group_rows
             if (value := success_value(row, "SR")) is not None
         ]
         osr_values = [
             value
-            for row in dataset_rows
+            for row in group_rows
             if (value := success_value(row, "OSR")) is not None
         ]
         spl_values = [
             value
-            for row in dataset_rows
+            for row in group_rows
             if (value := official_spl(row)) is not None
         ]
         oracle_spl_values = [
             value
-            for row in dataset_rows
+            for row in group_rows
             if (value := oracle_spl(row)) is not None
         ]
         records.append(
             SummaryRecord(
-                dataset=dataset,
-                items=len(dataset_rows),
+                group=group,
+                items=len(group_rows),
                 sr_pct=percent_mean(sr_values),
                 osr_pct=percent_mean(osr_values),
                 spl_pct=percent_mean(spl_values),
@@ -483,15 +615,18 @@ def plot_curve(
     points: list[CurvePoint],
     x_name: str,
     x_label: str,
+    group_colors: dict[str, str],
     output_path: Path,
 ) -> None:
-    fig, ax = plt.subplots(figsize=(9.6, 5.4))
-    for dataset in DATASET_ORDER:
+    groups = [group for group in group_colors if any(point.group == group and point.x_name == x_name for point in points)]
+    fig_width = 10.8 if len(groups) > 6 else 9.6
+    fig, ax = plt.subplots(figsize=(fig_width, 5.6))
+    for group in groups:
         for metric in ("SR", "OSR"):
             series = [
                 point
                 for point in points
-                if point.x_name == x_name and point.dataset == dataset and point.metric == metric
+                if point.x_name == x_name and point.group == group and point.metric == metric
             ]
             if not series:
                 continue
@@ -500,7 +635,7 @@ def plot_curve(
             ax.plot(
                 [point.x_center for point in series],
                 [point.value_pct for point in series],
-                color=DATASET_COLORS[dataset],
+                color=group_colors[group],
                 linestyle=style["linestyle"],
                 marker=style["marker"],
                 markersize=4.2,
@@ -517,9 +652,8 @@ def plot_curve(
     ax.set_axisbelow(True)
 
     dataset_handles = [
-        Line2D([0], [0], color=DATASET_COLORS[dataset], lw=2.2, label=dataset)
-        for dataset in DATASET_ORDER
-        if any(point.dataset == dataset and point.x_name == x_name for point in points)
+        Line2D([0], [0], color=group_colors[group], lw=2.2, label=group)
+        for group in groups
     ]
     metric_handles = [
         Line2D(
@@ -534,16 +668,34 @@ def plot_curve(
         )
         for metric in ("SR", "OSR")
     ]
-    first_legend = ax.legend(handles=dataset_handles, title="Dataset", loc="lower left")
-    ax.add_artist(first_legend)
-    ax.legend(handles=metric_handles, title="Metric", loc="lower right")
-    fig.tight_layout()
+    if len(groups) > 6:
+        first_legend = ax.legend(
+            handles=dataset_handles,
+            title="Group",
+            loc="upper left",
+            bbox_to_anchor=(1.01, 1.0),
+            borderaxespad=0.0,
+        )
+        ax.add_artist(first_legend)
+        ax.legend(
+            handles=metric_handles,
+            title="Metric",
+            loc="lower left",
+            bbox_to_anchor=(1.01, 0.0),
+            borderaxespad=0.0,
+        )
+        fig.tight_layout(rect=(0.0, 0.0, 0.82, 1.0))
+    else:
+        first_legend = ax.legend(handles=dataset_handles, title="Group", loc="lower left")
+        ax.add_artist(first_legend)
+        ax.legend(handles=metric_handles, title="Metric", loc="lower right")
+        fig.tight_layout()
     fig.savefig(output_path)
     plt.close(fig)
 
 
 def plot_summary_bars(plt, records: list[SummaryRecord], output_path: Path) -> None:
-    labels = [record.dataset for record in records]
+    labels = [record.group for record in records]
     metrics = ["SR", "OSR", "SPL", "Oracle-SPL"]
     values_by_metric = {
         "SR": [record.sr_pct for record in records],
@@ -552,10 +704,13 @@ def plot_summary_bars(plt, records: list[SummaryRecord], output_path: Path) -> N
         "Oracle-SPL": [record.oracle_spl_pct for record in records],
     }
 
-    fig, ax = plt.subplots(figsize=(9.2, 5.2))
+    fig_width = max(9.2, len(labels) * 0.95)
+    fig, ax = plt.subplots(figsize=(fig_width, 5.3))
     positions = list(range(len(labels)))
     bar_width = 0.18
     offsets = [-1.5 * bar_width, -0.5 * bar_width, 0.5 * bar_width, 1.5 * bar_width]
+    max_value = max((value for values in values_by_metric.values() for value in values), default=100.0)
+    ax.set_ylim(0, max(100.0, max_value + 8.0))
 
     for metric, offset in zip(metrics, offsets):
         bars = ax.bar(
@@ -570,22 +725,22 @@ def plot_summary_bars(plt, records: list[SummaryRecord], output_path: Path) -> N
     ax.set_title("SAME Fine Metrics: SR, OSR, SPL, Oracle-SPL")
     ax.set_ylabel("score (%)")
     ax.set_xticks(positions)
-    ax.set_xticklabels(labels)
-    ax.set_ylim(0, 100)
+    ax.set_xticklabels(labels, rotation=25 if len(labels) > 6 else 0, ha="right" if len(labels) > 6 else "center")
     ax.grid(axis="y", linestyle="--", linewidth=0.7, alpha=0.35)
     ax.set_axisbelow(True)
-    ax.legend(ncol=4, loc="upper center", bbox_to_anchor=(0.5, 1.01))
-    fig.tight_layout()
+    ax.legend(ncol=4, loc="upper center", bbox_to_anchor=(0.5, 1.14))
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.92))
     fig.savefig(output_path)
     plt.close(fig)
 
 
 def annotate_bars(ax, bars) -> None:
+    ymax = ax.get_ylim()[1]
     for bar in bars:
         height = bar.get_height()
         ax.text(
             bar.get_x() + bar.get_width() / 2,
-            min(height + 1.4, 98.0),
+            min(height + ymax * 0.014, ymax - ymax * 0.025),
             f"{height:.1f}",
             ha="center",
             va="bottom",
@@ -599,7 +754,7 @@ def write_curve_points(path: Path, points: list[CurvePoint]) -> None:
             handle,
             fieldnames=[
                 "x_name",
-                "dataset",
+                "group",
                 "metric",
                 "bin_label",
                 "x_center",
@@ -612,7 +767,7 @@ def write_curve_points(path: Path, points: list[CurvePoint]) -> None:
             writer.writerow(
                 {
                     "x_name": point.x_name,
-                    "dataset": point.dataset,
+                    "group": point.group,
                     "metric": point.metric,
                     "bin_label": point.bin_label,
                     "x_center": f"{point.x_center:.6g}",
@@ -627,7 +782,7 @@ def write_summary_csv(path: Path, records: list[SummaryRecord]) -> None:
         writer = csv.DictWriter(
             handle,
             fieldnames=[
-                "dataset",
+                "group",
                 "items",
                 "sr_pct",
                 "osr_pct",
@@ -639,7 +794,7 @@ def write_summary_csv(path: Path, records: list[SummaryRecord]) -> None:
         for record in records:
             writer.writerow(
                 {
-                    "dataset": record.dataset,
+                    "group": record.group,
                     "items": record.items,
                     "sr_pct": f"{record.sr_pct:.6f}",
                     "osr_pct": f"{record.osr_pct:.6f}",
@@ -658,6 +813,8 @@ def write_markdown_summary(
     warnings: list[str],
     min_bin_items: int,
     bin_count: int,
+    group_by: str,
+    split_filters: list[str],
 ) -> None:
     lines = [
         "# SAME Fine-Metric Plot Summary",
@@ -665,6 +822,8 @@ def write_markdown_summary(
         f"- experiment_id: {experiment_id}",
         f"- generated_at: {dt.datetime.now().astimezone().isoformat()}",
         f"- source: {repo_rel(wide_csv)}",
+        f"- group_by: {group_by}",
+        f"- split_filter: {', '.join(split_filters) if split_filters else 'all'}",
         f"- bin_count: {bin_count}",
         f"- min_bin_items: {min_bin_items}",
         "",
@@ -674,11 +833,11 @@ def write_markdown_summary(
         lines.append(f"- {repo_rel(output_path)}")
 
     lines.extend(["", "## Dataset Summary", ""])
-    lines.append("| dataset | items | SR | OSR | SPL | Oracle-SPL |")
+    lines.append("| group | items | SR | OSR | SPL | Oracle-SPL |")
     lines.append("| --- | ---: | ---: | ---: | ---: | ---: |")
     for record in records:
         lines.append(
-            f"| {record.dataset} | {record.items} | {record.sr_pct:.2f} | "
+            f"| {record.group} | {record.items} | {record.sr_pct:.2f} | "
             f"{record.osr_pct:.2f} | {record.spl_pct:.2f} | {record.oracle_spl_pct:.2f} |"
         )
 
@@ -703,7 +862,12 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     rows = load_rows(wide_csv)
+    split_filters = parse_split_filters(args.split)
+    rows = filter_rows_by_split(rows, split_filters)
     experiment_id = experiment_id_from_rows(rows)
+    group_by = resolve_group_by(rows, args.group_by)
+    output_stem = run_label(experiment_id, group_by, split_filters)
+    group_colors = build_group_colors(rows, group_by)
     plt, Line2D, style_warning = lazy_import_matplotlib(args.style, args.dpi)
     warnings = [style_warning] if style_warning else []
 
@@ -716,30 +880,32 @@ def main() -> int:
             x_column=x_column,
             bin_count=args.bin_count,
             min_bin_items=args.min_bin_items,
+            group_by=group_by,
         )
         if not points:
             warnings.append(f"No curve points generated for {x_column}.")
             continue
         all_points.extend(points)
-        output_path = output_dir / f"{experiment_id}_sr_osr_by_{x_name}.png"
+        output_path = output_dir / f"{output_stem}_sr_osr_by_{x_name}.png"
         plot_curve(
             plt=plt,
             Line2D=Line2D,
             points=points,
             x_name=x_name,
             x_label=x_label,
+            group_colors=group_colors,
             output_path=output_path,
         )
         output_paths.append(output_path)
 
-    summary_records = build_summary_records(rows)
-    bar_path = output_dir / f"{experiment_id}_sr_osr_spl_oracle_spl_bar.png"
+    summary_records = build_summary_records(rows, group_by)
+    bar_path = output_dir / f"{output_stem}_sr_osr_spl_oracle_spl_bar.png"
     plot_summary_bars(plt, summary_records, bar_path)
     output_paths.append(bar_path)
 
-    curve_points_path = output_dir / f"{experiment_id}_fine_metric_curve_points.csv"
-    metric_summary_path = output_dir / f"{experiment_id}_fine_metric_summary.csv"
-    markdown_summary_path = output_dir / f"{experiment_id}_fine_metric_plots_summary.md"
+    curve_points_path = output_dir / f"{output_stem}_fine_metric_curve_points.csv"
+    metric_summary_path = output_dir / f"{output_stem}_fine_metric_summary.csv"
+    markdown_summary_path = output_dir / f"{output_stem}_fine_metric_plots_summary.md"
     write_curve_points(curve_points_path, all_points)
     write_summary_csv(metric_summary_path, summary_records)
     write_markdown_summary(
@@ -751,9 +917,13 @@ def main() -> int:
         warnings=warnings,
         min_bin_items=args.min_bin_items,
         bin_count=args.bin_count,
+        group_by=group_by,
+        split_filters=split_filters,
     )
 
     print(f"Generated {len(output_paths)} figure(s).")
+    print(f"Group by: {group_by}")
+    print(f"Split filter: {', '.join(split_filters) if split_filters else 'all'}")
     for output_path in output_paths:
         print(f"- {output_path}")
     print(f"Curve points: {curve_points_path}")
