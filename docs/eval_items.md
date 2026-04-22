@@ -38,7 +38,7 @@ experiment_outputs/<experiment_id>/
 - `*_eval_context.json`：保存一次运行级上下文和 split 级汇总。
 - `*_eval_items.jsonl`：每行一条被评估样本，保存样本级材料。
 
-当前 sidecar 由 `patches/same/experimental/0004-eval-items-sidecars.patch` 引入。注意 `scripts/experiments/run_same.py` 默认只自动应用 `patches/same/base/*.patch`，因此 experimental patch 需要手动 apply，或后续移动到 base 后才会随运行器自动生效。
+当前 sidecar 由 `patches/same/base/0004-eval-items-sidecars.patch` 引入，随 `scripts/experiments/run_same.py` 默认 base patch 集合自动应用。
 
 ## 2. eval_context.json
 
