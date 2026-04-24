@@ -1,0 +1,39 @@
+{
+  "name": "vln-lab-same-cu128",
+  "image": "vln-lab-same:cu128",
+  "workspaceFolder": "/workspace/vln-lab",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace/vln-lab,type=bind",
+  "remoteUser": "root",
+  "overrideCommand": false,
+  "runArgs": [
+    "--gpus",
+    "all",
+    "--network",
+    "host",
+    "--ipc=host",
+    "--shm-size=16g",
+    "--ulimit",
+    "memlock=-1",
+    "--ulimit",
+    "stack=67108864"
+  ],
+  "mounts": [
+    "source=${localEnv:HOME}/.cache/huggingface,target=/root/.cache/huggingface,type=bind,consistency=cached"
+  ],
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-vscode-remote.remote-containers",
+        "ms-python.python",
+        "ms-toolsai.jupyter"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/opt/conda/envs/test-v1/bin/python",
+        "python.terminal.activateEnvironment": true,
+        "jupyter.askForKernelRestart": false
+      }
+    }
+  },
+  "postCreateCommand": "bash -lc 'git config --global --get-all safe.directory | grep -Fxq /workspace/vln-lab || git config --global --add safe.directory /workspace/vln-lab; bash scripts/setup/setup_notebook_kernel.sh test-v1'",
+  "postAttachCommand": "bash -lc 'git config --global --get-all safe.directory | grep -Fxq /workspace/vln-lab || git config --global --add safe.directory /workspace/vln-lab; bash scripts/setup/setup_notebook_kernel.sh test-v1'"
+}
