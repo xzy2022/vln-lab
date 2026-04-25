@@ -4,6 +4,8 @@ experiment:
   # It should run R2R validation only and exit before any training starts.
   test: false
   eval_only: true
+  decision_trace: true
+  moe_trace: true
   max_saved_ckpts: 0
   save_latest_states: false
   data_dir: "../../../data/same"

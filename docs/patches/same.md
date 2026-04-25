@@ -12,6 +12,7 @@
 | base/0002-console-stdout.patch           | 将控制台 `INFO` 日志从 `stderr` 改到 `stdout` | base         | SAME commit b74c57b | 是      | 仅调整 `logging.StreamHandler` 的目标流，便于实验归档区分 stdout/stderr |
 | base/0003-cvdn-soon-path-metrics.patch   | 为 CVDN/SOON 增加路径质量指标                 | base         | SAME commit b74c57b | 是      | 追加 `nDTW`、`SDTW`、`CLS`，保留原有 SR/SPL 等指标                 |
 | base/0004-eval-items-sidecars.patch      | 为评测输出增加 eval items 明细文件              | base         | SAME commit b74c57b | 是      | 在官方 results 旁输出 `eval_items`/`eval_context` sidecar，用于逐项误差分析 |
+| base/0005-decision-trace.patch           | 为 DUET 导航导出逐步决策轨迹                    | base         | SAME commit b74c57b | 是      | 通过 `experiment.decision_trace`/`moe_trace` 开关写入 eval_items，不改变官方 results |
 
 ### 说明
 
@@ -40,4 +41,10 @@ python scripts/experiments/run_same.py \
 
 - 应用后可在 YAML 中显式设置：
   - `experiment.eval_only: true`
-- 这些补丁不触碰模型、loss、optimizer 或 trainer 细节；0003 仅补充 CVDN/SOON 的评测指标计算，0004 仅补充评测输出明细。
+  - `experiment.decision_trace: true`
+  - `experiment.moe_trace: true`
+- `base/0005-decision-trace.patch` 会把 `prediction.decision_trace` 写入 `eval_items/*_eval_items.jsonl`，并将 eval item 行 schema 从 `eval_items.v2` 升到 `eval_items.v3`。官方提交格式的 `results/*_results.json` 会在保存前移除 `decision_trace`，避免破坏 R2R/REVERIE/CVDN/SOON 原始提交格式。
+- `decision_trace` 每步记录当前位置、fusion/fuse weight、stop 概率、被选动作、实际执行 viewpoint、stop 原因、图路由、全局图候选、局部候选和当前可见候选。候选项包含 logit/prob、距离、point id、heading/elevation 等后处理字段。
+- `moe_trace` 只有在 `decision_trace` 开启时才会随 step 写出，内容是 global/local router logits 汇总后的专家平均概率、top experts、top expert probs 和 router entropy。
+- 0001、0002 不触碰模型、loss、optimizer 或 trainer 细节；0003 仅补充 CVDN/SOON 的评测指标计算；0004 仅补充评测输出明细；0005 会为追踪 fusion 和 MoE 增加模型输出字段 `fuse_weights`、`global_router_logits`、`local_router_logits`，这些字段只用于诊断和 sidecar 后处理，不应作为训练目标或官方评测字段使用。
+- trace 会明显增大 `eval_items` 体积。大规模正式跑分如果不需要逐步诊断，应保持 `experiment.decision_trace: false`。

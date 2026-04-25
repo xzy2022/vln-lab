@@ -102,6 +102,33 @@ apply_patch_file() {
     return 1
 }
 
+patch_stack_already_applied() {
+    local target_dir="$1"
+    shift
+    local -a patch_files=("$@")
+    local expected_dir
+    local actual_diff
+    local expected_diff
+
+    expected_dir=$(mktemp -d)
+    if ! git clone --quiet --no-hardlinks "${target_dir}" "${expected_dir}" >/dev/null 2>&1; then
+        rm -rf "${expected_dir}"
+        return 1
+    fi
+
+    for patch_file in "${patch_files[@]}"; do
+        if ! git -C "${expected_dir}" apply "${patch_file}" >/dev/null 2>&1; then
+            rm -rf "${expected_dir}"
+            return 1
+        fi
+    done
+
+    actual_diff=$(git -C "${target_dir}" diff --binary HEAD)
+    expected_diff=$(git -C "${expected_dir}" diff --binary HEAD)
+    rm -rf "${expected_dir}"
+    [[ "${actual_diff}" == "${expected_diff}" ]]
+}
+
 while (($# > 0)); do
     case "$1" in
         --method)
@@ -160,6 +187,10 @@ for method in "${METHODS[@]}"; do
     fi
 
     target_dir=$(resolve_target_dir "${method}")
+    if patch_stack_already_applied "${target_dir}" "${patch_files[@]}"; then
+        echo "Skipped ${method} patch stack: already applied in ${target_dir}"
+        continue
+    fi
     for patch_file in "${patch_files[@]}"; do
         apply_patch_file "${target_dir}" "${patch_file}"
     done

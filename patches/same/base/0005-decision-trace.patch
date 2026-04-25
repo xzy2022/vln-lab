@@ -1,0 +1,507 @@
+diff --git a/src/configs/default.yaml b/src/configs/default.yaml
+--- a/src/configs/default.yaml	2026-04-24 23:51:29.574427132 +0800
++++ b/src/configs/default.yaml	2026-04-24 23:51:29.583427106 +0800
+@@ -12,6 +12,8 @@
+   submit: false                # Submission mode
+   no_backtrack: false          # Disable backtracking
+   detailed_output: false       # Enable detailed output
++  decision_trace: false        # Save per-step navigation decision traces
++  moe_trace: false             # Save aggregated MoE routing summaries in decision traces
+ 
+   # Checkpoint Configuration
+   resume_file: null            # Path to resume a trained model
+@@ -277,4 +279,4 @@
+       "train": "habitatweb/train",
+       "val_train_seen": "habitatweb/val_train_seen",
+       "mp3d_val": "v1/val"
+-    }
+\ No newline at end of file
++    }
+diff --git a/src/models/vilmodel.py b/src/models/vilmodel.py
+--- a/src/models/vilmodel.py	2026-04-24 23:51:29.576427126 +0800
++++ b/src/models/vilmodel.py	2026-04-24 23:51:29.585427100 +0800
+@@ -1118,7 +1118,12 @@
+             
+         # navigation logits
+         if self.sap_fuse_linear is None:
+-            fuse_weights = 0.5
++            fuse_weights = torch.full(
++                (batch_size, 1),
++                0.5,
++                dtype=gmap_embeds.dtype,
++                device=gmap_embeds.device,
++            )
+         else:
+             fuse_weights = torch.sigmoid(self.sap_fuse_linear(
+                 torch.cat([gmap_embeds[:, 0], vp_embeds[:, 0]], 1)
+@@ -1170,6 +1175,9 @@
+             'fused_logits': fused_logits,
+             'obj_logits': obj_logits,
+             'all_router_logits': all_router_logits,
++            'global_router_logits': glo_all_router_logits,
++            'local_router_logits': loc_all_router_logits,
++            'fuse_weights': fuse_weights,
+         }
+         return outs
+ 
+@@ -1196,4 +1204,4 @@
+             )
+ 
+             
+-       
+\ No newline at end of file
++       
+diff --git a/src/tasks/agents/base_agent.py b/src/tasks/agents/base_agent.py
+--- a/src/tasks/agents/base_agent.py	2026-04-24 23:51:29.578427121 +0800
++++ b/src/tasks/agents/base_agent.py	2026-04-24 23:51:29.586427098 +0800
+@@ -40,6 +40,10 @@
+                     'pred_objid': v['pred_objid'],
+                     'pred_obj_direction': v['pred_obj_direction']
+                 })
++            if 'decision_trace' in v:
++                ret.update({
++                    'decision_trace': v['decision_trace']
++                })
+             if detailed_output:
+                 ret.update({
+                     'details': v['details']
+diff --git a/src/tasks/agents/duet_agent.py b/src/tasks/agents/duet_agent.py
+--- a/src/tasks/agents/duet_agent.py	2026-04-24 23:51:29.579427118 +0800
++++ b/src/tasks/agents/duet_agent.py	2026-04-24 23:51:29.587427094 +0800
+@@ -439,6 +439,287 @@
+             for cand in ob['candidate']:
+                 self.scanvp_cands[scanvp].setdefault(cand['viewpointId'], {})
+                 self.scanvp_cands[scanvp][cand['viewpointId']] = cand['pointId']
++
++    def _experiment_flag(self, name, default=False):
++        experiment = getattr(self.args, 'experiment', None)
++        if experiment is None:
++            return default
++        if isinstance(experiment, dict):
++            return bool(experiment.get(name, default))
++        return bool(getattr(experiment, name, default))
++
++    def _decision_trace_enabled(self):
++        return self._experiment_flag('decision_trace', False)
++
++    def _moe_trace_enabled(self):
++        return self._experiment_flag('moe_trace', False)
++
++    @staticmethod
++    def _finite_float(value):
++        try:
++            value = float(value)
++        except (TypeError, ValueError):
++            return None
++        return value if math.isfinite(value) else None
++
++    @staticmethod
++    def _tensor_float(tensor, *indices):
++        if tensor is None:
++            return None
++        try:
++            value = tensor.detach()
++            if indices:
++                value = value[indices]
++            return DUETAgent._finite_float(value.item())
++        except (AttributeError, IndexError, RuntimeError, TypeError, ValueError):
++            return None
++
++    @staticmethod
++    def _bool_value(value):
++        try:
++            if hasattr(value, 'detach'):
++                return bool(value.detach().cpu().item())
++            return bool(value)
++        except (RuntimeError, TypeError, ValueError):
++            return False
++
++    @staticmethod
++    def _int_value(value):
++        try:
++            if hasattr(value, 'detach'):
++                return int(value.detach().cpu().item())
++            return int(value)
++        except (RuntimeError, TypeError, ValueError):
++            return None
++
++    def _score_pair(self, logits, probs, sample_index, action_index):
++        return {
++            'logit': self._tensor_float(logits, sample_index, action_index),
++            'prob': self._tensor_float(probs, sample_index, action_index),
++        }
++
++    def _graph_route(self, gmap, current_viewpoint, target_viewpoint):
++        if target_viewpoint is None:
++            return [current_viewpoint]
++        try:
++            return [current_viewpoint] + list(gmap.graph.path(current_viewpoint, target_viewpoint))
++        except Exception:
++            return [current_viewpoint, target_viewpoint]
++
++    def _router_logits_for_sample(self, router_logits, sample_index, batch_size):
++        if router_logits is None:
++            return None
++        if router_logits.dim() == 2 and router_logits.size(0) == batch_size:
++            return router_logits[sample_index].view(1, -1)
++        if router_logits.dim() == 2 and router_logits.size(0) % batch_size == 0:
++            return router_logits.view(batch_size, -1, router_logits.size(-1))[sample_index]
++        if router_logits.dim() == 3 and router_logits.size(0) == batch_size:
++            return router_logits[sample_index].view(-1, router_logits.size(-1))
++        return None
++
++    def _build_moe_trace(self, nav_outs, sample_index, batch_size):
++        if not self._moe_trace_enabled():
++            return None
++
++        sample_probs = []
++        for router_key in ('global_router_logits', 'local_router_logits'):
++            router_collection = nav_outs.get(router_key)
++            if router_collection is None:
++                continue
++            for router_logits in router_collection:
++                sample_logits = self._router_logits_for_sample(router_logits, sample_index, batch_size)
++                if sample_logits is None:
++                    continue
++                probs = torch.softmax(sample_logits.float(), dim=-1)
++                sample_probs.append(probs.detach().cpu())
++
++        if not sample_probs:
++            return None
++
++        mean_probs = torch.cat(sample_probs, dim=0).mean(dim=0)
++        entropy = -torch.sum(mean_probs * torch.log(mean_probs.clamp_min(1e-12)))
++        top_k = min(int(getattr(self.args.model, 'num_experts_per_tok', 2)), mean_probs.numel())
++        top_probs, top_indices = torch.topk(mean_probs, top_k)
++        return {
++            'expert_probs_mean': [self._finite_float(x) for x in mean_probs.tolist()],
++            'top_experts': [int(x) for x in top_indices.tolist()],
++            'top_expert_probs': [self._finite_float(x) for x in top_probs.tolist()],
++            'router_entropy': self._finite_float(entropy.item()),
++        }
++
++    def _append_decision_trace(
++        self,
++        *,
++        step,
++        obs,
++        gmaps,
++        traj,
++        nav_inputs,
++        nav_outs,
++        nav_logits,
++        nav_probs,
++        nav_vpids,
++        a_t,
++        a_t_stop,
++        cpu_a_t,
++        ended,
++        max_action_len,
++    ):
++        batch_size = len(obs)
++        global_logits = nav_outs['global_logits']
++        local_logits = nav_outs['local_logits']
++        fused_logits = nav_outs['fused_logits']
++        global_probs = torch.softmax(global_logits, 1)
++        local_probs = torch.softmax(local_logits, 1)
++        fused_probs = torch.softmax(fused_logits, 1)
++
++        for i, ob in enumerate(obs):
++            if self._bool_value(ended[i]):
++                continue
++            if 'decision_trace' not in traj[i]:
++                continue
++
++            selected_index = self._int_value(a_t[i])
++            selected_viewpoint = None
++            if selected_index is not None and 0 <= selected_index < len(nav_vpids[i]):
++                selected_viewpoint = nav_vpids[i][selected_index]
++
++            current_viewpoint = ob['viewpoint']
++            visible_by_vp = {cand['viewpointId']: cand for cand in ob.get('candidate', [])}
++            executed_viewpoint = cpu_a_t[i]
++            if executed_viewpoint is None:
++                selection_kind = 'stop'
++            elif executed_viewpoint in visible_by_vp:
++                selection_kind = 'current_visible'
++            else:
++                selection_kind = 'global_node'
++
++            stop_reason = None
++            if executed_viewpoint is None:
++                if self._bool_value(a_t_stop[i]):
++                    stop_reason = 'model_stop'
++                elif nav_inputs['no_vp_left'][i]:
++                    stop_reason = 'no_vp_left'
++                elif step == max_action_len - 1:
++                    stop_reason = 'max_action_len'
++                else:
++                    stop_reason = 'forced_stop'
++
++            route_viewpoints = self._graph_route(gmaps[i], current_viewpoint, executed_viewpoint)
++            gmap_vpids = nav_inputs['gmap_vpids'][i]
++            gmap_index_by_vp = {
++                vp: idx for idx, vp in enumerate(gmap_vpids)
++                if vp is not None and vp not in gmap_vpids[:idx]
++            }
++
++            gmap_candidates = []
++            for idx, vp in enumerate(gmap_vpids):
++                valid = self._bool_value(nav_inputs['gmap_masks'][i, idx])
++                visited = self._bool_value(nav_inputs['gmap_visited_masks'][i, idx])
++                if vp is None:
++                    graph_distance_m = None
++                    graph_hops = None
++                    route = [current_viewpoint]
++                else:
++                    route = self._graph_route(gmaps[i], current_viewpoint, vp)
++                    graph_distance_m = self._finite_float(gmaps[i].graph.distance(current_viewpoint, vp))
++                    graph_hops = max(len(route) - 1, 0)
++                gmap_candidates.append({
++                    'index': idx,
++                    'viewpoint': vp,
++                    'valid': valid,
++                    'visited': visited,
++                    'actionable': valid and (idx == 0 or not visited),
++                    'step_id': int(gmaps[i].node_step_ids.get(vp, 0)) if vp is not None else 0,
++                    'graph_distance_m': graph_distance_m,
++                    'graph_hops': graph_hops,
++                    'is_current_visible': vp in visible_by_vp if vp is not None else False,
++                    'point_id': visible_by_vp.get(vp, {}).get('pointId') if vp is not None else None,
++                    'global': self._score_pair(global_logits, global_probs, i, idx),
++                    'fused': self._score_pair(fused_logits, fused_probs, i, idx),
++                })
++
++            local_candidates = []
++            local_vpids = nav_inputs['vp_cand_vpids'][i]
++            for idx, vp in enumerate(local_vpids):
++                valid = self._bool_value(nav_inputs['vp_nav_masks'][i, idx])
++                cand = ob.get('candidate', [])[idx - 1] if idx > 0 and idx - 1 < len(ob.get('candidate', [])) else {}
++                local_candidates.append({
++                    'index': idx,
++                    'viewpoint': vp,
++                    'valid': valid,
++                    'point_id': cand.get('pointId'),
++                    'heading': self._finite_float(cand.get('heading')),
++                    'elevation': self._finite_float(cand.get('elevation')),
++                    'normalized_heading': self._finite_float(cand.get('normalized_heading')),
++                    'normalized_elevation': self._finite_float(cand.get('normalized_elevation')),
++                    'distance_m': self._finite_float(cand.get('distance')),
++                    'local': self._score_pair(local_logits, local_probs, i, idx),
++                })
++
++            visible_candidates = []
++            for cand_index, cand in enumerate(ob.get('candidate', []), start=1):
++                vp = cand['viewpointId']
++                gmap_index = gmap_index_by_vp.get(vp)
++                visible_candidates.append({
++                    'local_index': cand_index,
++                    'gmap_index': gmap_index,
++                    'viewpoint': vp,
++                    'point_id': cand.get('pointId'),
++                    'heading': self._finite_float(cand.get('heading')),
++                    'elevation': self._finite_float(cand.get('elevation')),
++                    'normalized_heading': self._finite_float(cand.get('normalized_heading')),
++                    'normalized_elevation': self._finite_float(cand.get('normalized_elevation')),
++                    'distance_m': self._finite_float(cand.get('distance')),
++                    'is_selected': executed_viewpoint == vp,
++                    'local': self._score_pair(local_logits, local_probs, i, cand_index),
++                    'global': (
++                        self._score_pair(global_logits, global_probs, i, gmap_index)
++                        if gmap_index is not None else {'logit': None, 'prob': None}
++                    ),
++                    'fused': (
++                        self._score_pair(fused_logits, fused_probs, i, gmap_index)
++                        if gmap_index is not None else {'logit': None, 'prob': None}
++                    ),
++                })
++
++            selected_point_id = visible_by_vp.get(executed_viewpoint, {}).get('pointId') if executed_viewpoint else None
++            selected = {
++                'index': selected_index,
++                'viewpoint': selected_viewpoint,
++                'executed_viewpoint': executed_viewpoint,
++                'point_id': selected_point_id,
++                'prob': (
++                    self._tensor_float(nav_probs, i, selected_index)
++                    if selected_index is not None else None
++                ),
++                'logit': (
++                    self._tensor_float(nav_logits, i, selected_index)
++                    if selected_index is not None else None
++                ),
++                'selection_kind': selection_kind,
++                'stop_reason': stop_reason,
++            }
++
++            trace_step = {
++                'step': int(step),
++                'scan': ob.get('scan'),
++                'current_viewpoint': current_viewpoint,
++                'current_heading': self._finite_float(ob.get('heading')),
++                'current_elevation': self._finite_float(ob.get('elevation')),
++                'fusion': self.args.agent.fusion,
++                'fuse_weight': self._tensor_float(nav_outs.get('fuse_weights'), i, 0),
++                'stop_prob': self._tensor_float(nav_probs, i, 0),
++                'selected': selected,
++                'route_viewpoints': route_viewpoints,
++                'gmap_candidates': gmap_candidates,
++                'local_candidates': local_candidates,
++                'visible_candidates': visible_candidates,
++            }
++            moe_trace = self._build_moe_trace(nav_outs, i, batch_size)
++            if moe_trace is not None:
++                trace_step['moe'] = moe_trace
++            traj[i]['decision_trace']['steps'].append(trace_step)
+     
+     def reset_sims(self, sims, items):
+         for sim, item in zip(sims, items):
+@@ -491,11 +772,20 @@
+             gmaps[i].update_graph(ob)
+ 
+         # Record the navigation path
+-        traj = [{
+-            'instr_id': ob['instr_id'],
+-            'path': [[ob['viewpoint']]],
+-            'details': {},
+-        } for ob in obs]
++        trace_enabled = self._decision_trace_enabled()
++        traj = []
++        for ob in obs:
++            item_traj = {
++                'instr_id': ob['instr_id'],
++                'path': [[ob['viewpoint']]],
++                'details': {},
++            }
++            if trace_enabled:
++                item_traj['decision_trace'] = {
++                    'schema_version': 'duet_decision_trace.v1',
++                    'steps': [],
++                }
++            traj.append(item_traj)
+ 
+         # Language input: txt_ids, txt_masks
+         language_inputs = self._language_variable(obs)
+@@ -628,6 +918,24 @@
+                 else:
+                     cpu_a_t.append(nav_vpids[i][a_t[i]])   
+ 
++            if trace_enabled:
++                self._append_decision_trace(
++                    step=t,
++                    obs=obs,
++                    gmaps=gmaps,
++                    traj=traj,
++                    nav_inputs=nav_inputs,
++                    nav_outs=nav_outs,
++                    nav_logits=nav_logits,
++                    nav_probs=nav_probs,
++                    nav_vpids=nav_vpids,
++                    a_t=a_t,
++                    a_t_stop=a_t_stop,
++                    cpu_a_t=cpu_a_t,
++                    ended=ended,
++                    max_action_len=max_action_len,
++                )
++
+             # Make action and get the new state
+             self.make_equiv_action(cpu_a_t, sims, gmaps, obs, traj)
+             for i in range(batch_size):
+@@ -637,6 +945,17 @@
+                         if v['stop'] > stop_score['stop']:
+                             stop_score = v
+                             stop_node = k
++                    if trace_enabled and traj[i].get('decision_trace', {}).get('steps'):
++                        trace_step = traj[i]['decision_trace']['steps'][-1]
++                        trace_step['stop_route'] = {
++                            'viewpoint': stop_node,
++                            'stop_prob': float(stop_score['stop']),
++                        }
++                        if stop_node is not None:
++                            trace_step['route_viewpoints'] = self._graph_route(
++                                gmaps[i], obs[i]['viewpoint'], stop_node
++                            )
++                            trace_step['selected']['executed_viewpoint'] = stop_node
+                     if stop_node is not None and obs[i]['viewpoint'] != stop_node:
+                         traj[i]['path'].append(gmaps[i].graph.path(obs[i]['viewpoint'], stop_node))
+                     if self.args.experiment.detailed_output:
+@@ -687,4 +1006,4 @@
+             
+             self.logs['loss'].append(loss.item() * accumulate_gradient_steps)
+ 
+-        return traj, loss
+\ No newline at end of file
++        return traj, loss
+diff --git a/src/tasks/datasets/mp3d_dataset.py b/src/tasks/datasets/mp3d_dataset.py
+--- a/src/tasks/datasets/mp3d_dataset.py	2026-04-24 23:51:29.581427112 +0800
++++ b/src/tasks/datasets/mp3d_dataset.py	2026-04-24 23:51:29.588427092 +0800
+@@ -409,7 +409,7 @@
+ 
+         context = {
+             'schema_version': 'eval_context.v1',
+-            'items_schema_version': 'eval_items.v2',
++                'items_schema_version': 'eval_items.v3',
+             'run_context': {
+                 'framework': 'SAME',
+                 'experiment_id': experiment_id if experiment_id is not None else self._eval_item_experiment_id(),
+@@ -491,7 +491,7 @@
+             )
+ 
+         return {
+-            'schema_version': 'eval_items.v2',
++            'schema_version': 'eval_items.v3',
+             'identity': self._eval_item_identity(dataset_name, ann, pred),
+             'annotation': {
+                 'scan': scan,
+@@ -587,11 +587,14 @@
+         return {}
+ 
+     def _eval_item_prediction(self, dataset_name, pred, trajectory):
+-        return {
++        prediction = {
+             'pred_path_segments': pred.get('trajectory', []),
+             'trajectory': trajectory,
+             'official_saved_trajectory': self._eval_item_official_saved_trajectory(dataset_name, pred, trajectory),
+         }
++        if pred.get('decision_trace') is not None:
++            prediction['decision_trace'] = pred.get('decision_trace')
++        return prediction
+ 
+     def _eval_item_official_saved_trajectory(self, dataset_name, pred, trajectory):
+         if dataset_name == 'SOON':
+@@ -813,4 +816,4 @@
+             if d < near_d:
+                 near_id = item
+                 near_d = d
+-        return near_id
+\ No newline at end of file
++        return near_id
+diff --git a/src/trainers/base_trainer.py b/src/trainers/base_trainer.py
+--- a/src/trainers/base_trainer.py	2026-04-24 23:51:29.582427109 +0800
++++ b/src/trainers/base_trainer.py	2026-04-24 23:51:29.590427086 +0800
+@@ -1,3 +1,4 @@
++import copy
+ import os
+ import math
+ import torch
+@@ -421,8 +422,12 @@
+                         experiment_id=self.config.experiment.id,
+                     )
+ 
++                official_preds = copy.deepcopy(all_preds)
++                for item in official_preds:
++                    item.pop('decision_trace', None)
++
+                 dataset.save_json(
+-                    all_preds, 
++                    official_preds, 
+                     os.path.join(results_dir, results_filename),
+                     item_metrics=item_metrics if item_metrics is not None else None
+                 )
+@@ -454,4 +459,4 @@
+                 "num_iters_per_epoch": num_iters_per_epoch
+             })
+ 
+-        torch.save(state_dict, model_path)
+\ No newline at end of file
++        torch.save(state_dict, model_path)

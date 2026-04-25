@@ -1446,6 +1446,15 @@ def checkpoint_tag_from_config(config: dict[str, Any]) -> str:
 
 
 def apply_same_patches(patch_paths: list[Path], stderr_path: Path) -> None:
+    try:
+        runtime_compare = compare_same_runtime_worktree(patch_paths)
+    except Exception as exc:  # pragma: no cover - best-effort preflight
+        append_stderr_message(stderr_path, f"SAME patch stack preflight skipped: {exc}")
+    else:
+        if not runtime_compare["manual_worktree"]:
+            print("[runner] SAME patch stack already applied", file=sys.stderr)
+            return
+
     for patch_path in patch_paths:
         try:
             state = apply_patch_to_repo(SAME_ROOT, patch_path)

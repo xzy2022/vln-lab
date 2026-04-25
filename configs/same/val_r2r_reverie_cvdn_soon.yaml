@@ -11,6 +11,8 @@ experiment:
   # Requires patches/same/experimental/0001-eval-only-exit.patch.
   # When that patch is applied, SAME will run one validation pass and exit cleanly.
   eval_only: true
+  decision_trace: true
+  moe_trace: true
   # Safety guards: do not save new checkpoints when the run falls through to train.
   max_saved_ckpts: 0
   save_latest_states: false

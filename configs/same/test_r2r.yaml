@@ -1,6 +1,8 @@
 experiment:
   id: "test-r2r"
   test: true
+  decision_trace: true
+  moe_trace: true
   data_dir: "../../../data/same"
   resume_file: "../../../data/same/ckpt/SAME.pt"
 
