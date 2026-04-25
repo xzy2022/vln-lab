@@ -67,12 +67,23 @@ OFFICIAL_METRICS = [
     "point_det_error",
 ]
 
+DECISION_TRACE_METRICS = [
+    "decision_step_count",
+    "avg_selected_prob",
+    "avg_stop_prob",
+    "avg_top1_top2_margin",
+    "global_node_selection_ratio",
+    "backtrack_route_ratio",
+    "avg_moe_router_entropy",
+]
+
 GROUP_METRICS = {
     "common": COMMON_METRICS,
     "eval_end_goal": ENDPOINT_METRICS,
     "eval_end_region": ENDPOINT_METRICS,
     "eval_end_region_threshold": ENDPOINT_METRICS,
     "official": OFFICIAL_METRICS,
+    "decision_trace": DECISION_TRACE_METRICS,
 }
 
 WIDE_FIELDNAMES = (
@@ -351,6 +362,7 @@ def build_fine_metric_row(
     eval_end_region = build_region_metrics(item, source, graph, common)
     eval_end_region_threshold = build_region_threshold_metrics(item, source, graph, common)
     official = build_official_metrics(item, source, graph, common)
+    decision_trace = build_decision_trace_metrics(item)
     identity = item.get("identity", {})
 
     return {
@@ -368,6 +380,7 @@ def build_fine_metric_row(
         "eval_end_region": eval_end_region,
         "eval_end_region_threshold": eval_end_region_threshold,
         "official": official,
+        "decision_trace": decision_trace,
     }
 
 
@@ -401,6 +414,72 @@ def build_common_metrics(item: dict[str, Any]) -> dict[str, Any]:
         "path_length_m": float(path_length_m) if path_length_m is not None else None,
         "path_edge_count": count_moves(trajectory),
     }
+
+
+def build_decision_trace_metrics(item: dict[str, Any]) -> dict[str, Any]:
+    trace = item.get("prediction", {}).get("decision_trace") or {}
+    steps = trace.get("steps") or []
+    selected_probs: list[float] = []
+    stop_probs: list[float] = []
+    margins: list[float] = []
+    moe_entropies: list[float] = []
+    global_node_count = 0
+    backtrack_route_count = 0
+
+    for step in steps:
+        selected = step.get("selected") or {}
+        selected_prob = selected.get("prob")
+        if selected_prob is not None:
+            selected_probs.append(float(selected_prob))
+        stop_prob = step.get("stop_prob")
+        if stop_prob is not None:
+            stop_probs.append(float(stop_prob))
+        if selected.get("selection_kind") == "global_node":
+            global_node_count += 1
+        route = step.get("route_viewpoints") or []
+        if len(route) > 2:
+            backtrack_route_count += 1
+        margin = decision_top_margin(step)
+        if margin is not None:
+            margins.append(margin)
+        moe = step.get("moe") or {}
+        entropy = moe.get("router_entropy")
+        if entropy is not None:
+            moe_entropies.append(float(entropy))
+
+    step_count = len(steps)
+    return {
+        "decision_step_count": step_count,
+        "avg_selected_prob": mean_or_none(selected_probs),
+        "avg_stop_prob": mean_or_none(stop_probs),
+        "avg_top1_top2_margin": mean_or_none(margins),
+        "global_node_selection_ratio": ratio(global_node_count, step_count),
+        "backtrack_route_ratio": ratio(backtrack_route_count, step_count),
+        "avg_moe_router_entropy": mean_or_none(moe_entropies),
+    }
+
+
+def decision_top_margin(step: dict[str, Any]) -> float | None:
+    fusion = step.get("fusion")
+    if fusion == "local":
+        candidates = step.get("local_candidates") or []
+        score_name = "local"
+    elif fusion == "global":
+        candidates = step.get("gmap_candidates") or []
+        score_name = "global"
+    else:
+        candidates = step.get("gmap_candidates") or []
+        score_name = "fused"
+
+    probs = [
+        float((candidate.get(score_name) or {}).get("prob"))
+        for candidate in candidates
+        if (candidate.get(score_name) or {}).get("prob") is not None
+    ]
+    if len(probs) < 2:
+        return None
+    probs.sort(reverse=True)
+    return probs[0] - probs[1]
 
 
 def build_goal_metrics(
@@ -680,6 +759,12 @@ def safe_sum(values: list[float]) -> float | None:
     if not values:
         return None
     return float(sum(values))
+
+
+def mean_or_none(values: list[float]) -> float | None:
+    if not values:
+        return None
+    return float(sum(values)) / float(len(values))
 
 
 def ratio(numerator: Any, denominator: Any) -> float | None:
