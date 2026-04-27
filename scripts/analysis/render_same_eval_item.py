@@ -436,7 +436,11 @@ def ensure_scan_ready(
     skip_prepare: bool,
 ) -> None:
     scan_dir = dataset_path / scan
-    if not scan_dir.is_dir():
+    skybox_dir = scan_dir / "matterport_skybox_images"
+    archive_path = scan_dir / "matterport_skybox_images.zip"
+    has_small_skybox = skybox_dir.is_dir() and any(skybox_dir.glob("*_skybox_small.jpg"))
+    has_prepare_input = skybox_dir.is_dir() or archive_path.is_file()
+    if not scan_dir.is_dir() or (download_missing and not has_small_skybox and not has_prepare_input):
         if not download_missing:
             raise SystemExit(
                 f"Missing scan directory: {scan_dir}\n"
