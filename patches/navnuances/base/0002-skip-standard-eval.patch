@@ -1,0 +1,22 @@
+diff --git a/evaluation/eval.py b/evaluation/eval.py
+--- a/evaluation/eval.py
++++ b/evaluation/eval.py
+@@ -22,6 +22,8 @@ parser.add_argument('--scans_dir', type=str, required=False,
+                         help='directory to scans of matterport3d')
+ parser.add_argument('--connectivity_dir', type=str, default=None, required=False,
+                         help='directory containing Matterport connectivity json files')
++parser.add_argument('--skip-standard', action='store_true',
++                        help='skip standard R2R_val_unseen evaluation')
+ args = parser.parse_args()
+ 
+ def discover_scans(scans_dir, connectivity_dir):
+@@ -48,7 +50,8 @@ graphs, paths, distances = load_nav_graphs(scans, connectivity_dir=connectivity_
+ 
+ def main():
+     evaluators = []
+-    evaluators.append(Evaluator(graphs, paths, distances, annt_file=os.path.join(args.annotation_root, 'R2R_val_unseen.json'), submission_file=os.path.join(args.submission_root, 'submit_val_unseen.json')))
++    if not args.skip_standard:
++        evaluators.append(Evaluator(graphs, paths, distances, annt_file=os.path.join(args.annotation_root, 'R2R_val_unseen.json'), submission_file=os.path.join(args.submission_root, 'submit_val_unseen.json')))
+     evaluators.append(Evaluator_LR(graphs, paths, distances, annt_file=os.path.join(args.annotation_root, 'R2R_LR.json'), submission_file=os.path.join(args.submission_root, 'submit_LR.json')))
+     evaluators.append(Evaluator_RR(graphs, paths, distances, annt_file=os.path.join(args.annotation_root, 'R2R_RR.json'), submission_file=os.path.join(args.submission_root, 'submit_RR.json')))
+     evaluators.append(Evaluator_VM(graphs, paths, distances, annt_file=os.path.join(args.annotation_root, 'R2R_VM.json'), submission_file=os.path.join(args.submission_root, 'submit_VM.json')))
