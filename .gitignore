@@ -7,7 +7,8 @@ __pycache__/
 
 reports/artifacts
 experiment_outputs/
-
+tmp/
+Notes/
 
 # Env
 .env
