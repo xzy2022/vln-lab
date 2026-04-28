@@ -67,6 +67,7 @@ class BuildSameFineMetricsTests(unittest.TestCase):
                     "eval_end_region",
                     "eval_end_region_threshold",
                     "official",
+                    "decision_trace",
                 ],
             )
             self.assertEqual(manifest["counts"]["items"], 1)
