@@ -63,6 +63,16 @@ resolve_target_dir() {
     local candidate_name
 
     normalized_method=$(canonicalize_name "${method}")
+    case "${normalized_method}" in
+        mp3dsim|matterport3dsimulator)
+            candidate="${THIRD_PARTY_DIR}/Matterport3DSimulator"
+            if [[ -d "${candidate}" ]]; then
+                printf '%s\n' "${candidate}"
+                return 0
+            fi
+            ;;
+    esac
+
     for candidate in "${THIRD_PARTY_DIR}"/*; do
         [[ -d "${candidate}" ]] || continue
         candidate_name=$(basename "${candidate}")
@@ -76,30 +86,56 @@ resolve_target_dir() {
     return 1
 }
 
+prepare_dry_run_target() {
+    local target_dir="$1"
+    local dry_run_target
+    local current_diff
+
+    dry_run_target=$(mktemp -d)
+    current_diff=$(mktemp)
+
+    if ! git clone --quiet --no-hardlinks "${target_dir}" "${dry_run_target}" >/dev/null 2>&1; then
+        rm -rf "${dry_run_target}" "${current_diff}"
+        return 1
+    fi
+
+    if ! git -C "${target_dir}" diff --binary HEAD > "${current_diff}"; then
+        rm -rf "${dry_run_target}" "${current_diff}"
+        return 1
+    fi
+
+    if [[ -s "${current_diff}" ]]; then
+        if ! git -C "${dry_run_target}" apply --binary "${current_diff}" >/dev/null 2>&1; then
+            rm -rf "${dry_run_target}" "${current_diff}"
+            return 1
+        fi
+    fi
+
+    rm -f "${current_diff}"
+    printf '%s\n' "${dry_run_target}"
+}
+
 revert_patch_file() {
     local target_dir="$1"
     local patch_file="$2"
+    local display_target_dir="${3:-$1}"
     local rel_patch
 
     rel_patch=${patch_file#"${REPO_DIR}/"}
 
-    if git -C "${target_dir}" apply --reverse --check "${patch_file}" >/dev/null 2>&1; then
+    if git -C "${target_dir}" apply --reverse --check --whitespace=nowarn "${patch_file}" >/dev/null 2>&1; then
         if (( DRY_RUN )); then
-            echo "[dry-run] revert ${rel_patch} -> ${target_dir}"
+            git -C "${target_dir}" apply --reverse --whitespace=nowarn "${patch_file}"
+            echo "[dry-run] revert ${rel_patch} -> ${display_target_dir}"
         else
-            git -C "${target_dir}" apply --reverse "${patch_file}"
-            echo "Reverted ${rel_patch} -> ${target_dir}"
+            git -C "${target_dir}" apply --reverse --whitespace=nowarn "${patch_file}"
+            echo "Reverted ${rel_patch} -> ${display_target_dir}"
         fi
         return 0
     fi
 
-    if git -C "${target_dir}" apply --check "${patch_file}" >/dev/null 2>&1; then
-        echo "Skipped ${rel_patch}: patch is not applied in ${target_dir}"
-        return 0
-    fi
-
-    echo "无法回退 patch: ${rel_patch} (target: ${target_dir})" >&2
-    return 1
+    echo "Skipped ${rel_patch}: patch is not currently reversible in ${display_target_dir}"
+    return 0
 }
 
 while (($# > 0)); do
@@ -160,7 +196,19 @@ for method in "${METHODS[@]}"; do
     fi
 
     target_dir=$(resolve_target_dir "${method}")
-    for patch_file in "${patch_files[@]}"; do
-        revert_patch_file "${target_dir}" "${patch_file}"
+    apply_dir="${target_dir}"
+    dry_run_target_dir=""
+    if (( DRY_RUN )); then
+        dry_run_target_dir=$(prepare_dry_run_target "${target_dir}")
+        apply_dir="${dry_run_target_dir}"
+    fi
+
+    for ((idx=${#patch_files[@]} - 1; idx >= 0; idx--)); do
+        patch_file="${patch_files[idx]}"
+        revert_patch_file "${apply_dir}" "${patch_file}" "${target_dir}"
     done
+
+    if [[ -n "${dry_run_target_dir}" ]]; then
+        rm -rf "${dry_run_target_dir}"
+    fi
 done

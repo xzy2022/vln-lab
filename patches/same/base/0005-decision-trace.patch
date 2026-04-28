@@ -44,13 +44,6 @@ diff --git a/src/models/vilmodel.py b/src/models/vilmodel.py
          }
          return outs
  
-@@ -1196,4 +1204,4 @@
-             )
- 
-             
--       
-\ No newline at end of file
-+       
 diff --git a/src/tasks/agents/base_agent.py b/src/tasks/agents/base_agent.py
 --- a/src/tasks/agents/base_agent.py	2026-04-24 23:51:29.578427121 +0800
 +++ b/src/tasks/agents/base_agent.py	2026-04-24 23:51:29.586427098 +0800
@@ -493,8 +486,8 @@ diff --git a/src/trainers/base_trainer.py b/src/trainers/base_trainer.py
 +                    item.pop('decision_trace', None)
 +
                  dataset.save_json(
--                    all_preds, 
-+                    official_preds, 
+-                    all_preds,
++                    official_preds,
                      os.path.join(results_dir, results_filename),
                      item_metrics=item_metrics if item_metrics is not None else None
                  )

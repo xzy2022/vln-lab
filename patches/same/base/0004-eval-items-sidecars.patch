@@ -516,7 +516,8 @@ index 0a1ef25..d37e02d 100644
 +                    )
 +
                  dataset.save_json(
-                     all_preds, 
+-                    all_preds, 
++                    all_preds,
 -                    os.path.join(self.output_dir, "results", f"{task_name}_{split}_results.json"),
 +                    os.path.join(results_dir, results_filename),
                      item_metrics=item_metrics if item_metrics is not None else None

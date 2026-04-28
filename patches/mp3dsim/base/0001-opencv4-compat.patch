@@ -1,0 +1,31 @@
+diff --git a/src/lib/NavGraph.cpp b/src/lib/NavGraph.cpp
+index ba55ad9..c12af54 100644
+--- a/src/lib/NavGraph.cpp
++++ b/src/lib/NavGraph.cpp
+@@ -56,7 +56,12 @@ void NavGraph::Location::loadCubemapImages() {
+     }
+     if (includeDepth) {
+         // 16 bit grayscale images
+-        cv::Mat depth = cv::imread(skyboxDir + viewpointId + "_skybox_depth_small.png", CV_LOAD_IMAGE_ANYDEPTH);
++#if CV_MAJOR_VERSION >= 3
++        const int depthReadFlag = cv::IMREAD_ANYDEPTH;
++#else
++        const int depthReadFlag = CV_LOAD_IMAGE_ANYDEPTH;
++#endif
++        cv::Mat depth = cv::imread(skyboxDir + viewpointId + "_skybox_depth_small.png", depthReadFlag);
+         w = depth.cols/6;
+         h = depth.rows;
+         xposD = depth(cv::Rect(2*w, 0, w, h));
+diff --git a/src/test/main.cpp b/src/test/main.cpp
+index 607dcc8..b4ff589 100644
+--- a/src/test/main.cpp
++++ b/src/test/main.cpp
+@@ -376,7 +376,7 @@ TEST_CASE( "RGB Image", "[Rendering]" ) {
+             auto imgfile = testcase["reference_image"].asString();
+             auto reference_image = cv::imread("webgl_imgs/"+imgfile);
+             auto state = sim.getState().at(n);
+-            double err = cv::norm(reference_image, state->rgb, CV_L2);
++            double err = cv::norm(reference_image, state->rgb, cv::NORM_L2);
+             err /= reference_image.rows * reference_image.cols;
+             CHECK(err < 0.15);
+             // save for later comparison, these images can also be inspected by hand

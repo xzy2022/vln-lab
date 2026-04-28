@@ -1,0 +1,67 @@
+diff --git a/evaluation/eval.py b/evaluation/eval.py
+--- a/evaluation/eval.py
++++ b/evaluation/eval.py
+@@ -20,11 +20,34 @@
+ parser.add_argument('--out_root', type=str,default='outs',required=False,
+                         help='output path')
+ parser.add_argument('--scans_dir', type=str, required=False,
+                         help='directory to scans of matterport3d')
++parser.add_argument('--connectivity_dir', type=str, default=None, required=False,
++                        help='directory containing Matterport connectivity json files')
+ args = parser.parse_args()
+ 
+-scans = os.listdir(args.scans_dir)
+-graphs, paths, distances = load_nav_graphs(scans)
++def discover_scans(scans_dir, connectivity_dir):
++    if scans_dir:
++        return sorted(os.listdir(scans_dir))
++
++    scans_txt = os.path.join(connectivity_dir, 'scans.txt')
++    if os.path.exists(scans_txt):
++        with open(scans_txt, 'r') as f:
++            return [
++                line.strip()
++                for line in f
++                if line.strip()
++            ]
++
++    suffix = '_connectivity.json'
++    return sorted(
++        filename[:-len(suffix)]
++        for filename in os.listdir(connectivity_dir)
++        if filename.endswith(suffix)
++    )
++
++connectivity_dir = args.connectivity_dir or os.path.join(os.path.dirname(__file__), 'connectivity')
++scans = discover_scans(args.scans_dir, connectivity_dir)
++graphs, paths, distances = load_nav_graphs(scans, connectivity_dir=connectivity_dir)
+ 
+ def main():
+     evaluators = []
+diff --git a/evaluation/utils/nav_graph_loader.py b/evaluation/utils/nav_graph_loader.py
+--- a/evaluation/utils/nav_graph_loader.py
++++ b/evaluation/utils/nav_graph_loader.py
+@@ -1,10 +1,13 @@
+ import networkx as nx
+ import json
+ import numpy as np
++from pathlib import Path
+ 
+-def load_nav_graphs(scans):
++def load_nav_graphs(scans, connectivity_dir='connectivity'):
+     ''' Load connectivity graph for each scan '''
+ 
++    connectivity_dir = Path(connectivity_dir)
++
+     def distance(pose1, pose2):
+         ''' Euclidean distance between two graph poses '''
+         return ((pose1['pose'][3]-pose2['pose'][3])**2\
+@@ -14,7 +17,7 @@ def load_nav_graphs(scans):
+     graphs = {}
+     for scan in scans:
+-        with open('connectivity/%s_connectivity.json' % scan) as f:
++        with open(connectivity_dir / f'{scan}_connectivity.json') as f:
+             G = nx.Graph()
+             positions = {}
+             data = json.load(f)
+             for i,item in enumerate(data):
