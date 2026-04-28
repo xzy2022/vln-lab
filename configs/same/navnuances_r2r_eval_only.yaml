@@ -1,0 +1,59 @@
+experiment:
+  id: "navnuances-r2r-eval-only"
+  test: false
+  eval_only: true
+  decision_trace: true
+  moe_trace: true
+  max_saved_ckpts: 0
+  save_latest_states: false
+  data_dir: "../../../data/navnuances/same"
+  resume_file: "../../../data/same/ckpt/SAME.pt"
+
+training:
+  val_batch_size: 4
+  workers: 2
+
+model:
+  moe_position: "Attn_q"
+  pretrained_ckpt: "../../../data/same/pretrain/Attnq_pretrained_ckpt.pt"
+  task_routing_feature: "multi"
+
+simulator:
+  connectivity_dir:
+    "mattersim": "../../../data/same/simulator/connectivity/"
+  candidate_file_dir:
+    "mattersim": "../../../data/same/simulator/mp3d_scanvp_candidates.json"
+  node_location_dir:
+    "mattersim": "../../../data/same/simulator/mp3d_connectivity_graphs.json"
+
+feature:
+  feature_database:
+    "mattersim": "../../../data/same/features/img_features/clip_vit-b16_mp3d_hm3d_gibson.hdf5"
+    "mp3d_habitat": "../../../data/same/features/img_features/MP3D_habitat_clip_b16.lmdb"
+    "hm3d_habitat": "../../../data/same/features/img_features/clip_vit-b16_mp3d_hm3d_gibson.hdf5"
+  object_database:
+    "reverie": "../../../data/same/features/obj_features/reverie_obj_feat"
+    "soon": "../../../data/same/features/obj_features/soon_obj_feat"
+
+task:
+  source: ["R2R"]
+  val_source: ["R2R"]
+  test_source: ["R2R"]
+  train_simulation_env:
+    "R2R": "mattersim"
+  eval_simulation_env:
+    "R2R": "mattersim"
+  eval_splits:
+    "R2R": ["DC", "LR", "RR", "VM", "NU", "val_unseen"]
+
+dataset:
+  R2R:
+    DIR: "R2R"
+    SPLIT:
+      "DC": "R2R_DC_enc.json"
+      "LR": "R2R_LR_enc.json"
+      "RR": "R2R_RR_enc.json"
+      "VM": "R2R_VM_enc.json"
+      "NU": "R2R_NU_enc.json"
+      # 由于完全一致,如果不是为了测试,没必要保留这个
+      # "val_unseen": "R2R_val_unseen_enc.json"
