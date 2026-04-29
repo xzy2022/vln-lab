@@ -13,7 +13,7 @@ reviewed：人工已读并认可口径
 实验数据来源：
 
 ```text
-experiment_outputs/0014_same_val_r2r_eval_only_same_s0_v5
+experiment_outputs/0017_same_val_train_eval_all_r2r_reverie_cvdn_soon_same_s0_trace4ds_train_eval_v1
 ```
 
 需要给出:
@@ -65,13 +65,13 @@ python scripts/analysis/build_oracle_gap_report.py \
 
 ```bash
 python scripts/analysis/build_oracle_gap_report.py \
-  --experiment-dir experiment_outputs/0014_same_val_r2r_eval_only_same_s0_v5
+  --experiment-dir experiment_outputs/0017_same_val_train_eval_all_r2r_reverie_cvdn_soon_same_s0_trace4ds_train_eval_v1
 ```
 
 默认输出目录：
 
 ```text
-experiment_outputs/0014_same_val_r2r_eval_only_same_s0_v5/oracle_gap_for_rl_research/
+experiment_outputs/0017_same_val_train_eval_all_r2r_reverie_cvdn_soon_same_s0_trace4ds_train_eval_v1/oracle_gap_for_rl_research/
 ```
 
 输出文件：
@@ -107,17 +107,23 @@ internal_item_id
 official, goal, region, region_threshold
 ```
 
-但当前数据是 R2R，因此实际只生成 `official` 和 `goal` 两类结果；`region` / `region_threshold` 对 R2R 不适用，会被跳过。
+当前 0017 数据覆盖 R2R、REVERIE、SOON、CVDN。实际输出中，R2R 只生成 `official` 和 `goal` 两类结果；`region` / `region_threshold` 对 R2R 不适用，会被跳过。REVERIE、SOON、CVDN 会生成四类 scope。
 
-R2R 的 `official` scope 使用：
+当前报告第 4 节主表使用 `official` scope 作为跨数据集主口径。该 scope 的成功规则为：
 
 ```text
-success_mode = distance_threshold
-distance_key = distance_to_nav_goal_by_step_m
-success_threshold_m = 3.0
+R2R / SOON / CVDN official:
+  success_mode = distance_threshold
+  distance_key = distance_to_nav_goal_by_step_m
+  success_threshold_m = 3.0
+
+REVERIE official:
+  success_mode = exact_viewpoint
+  distance_key = distance_to_nearest_success_target_by_step_m
+  targets = success_target_viewpoints
 ```
 
-也就是距离目标小于 3m 视为成功。
+也就是 R2R / SOON / CVDN 按距离目标小于 3m 视为成功；REVERIE official 按是否进入成功 viewpoint 集合视为成功。
 
 ### 3.3 step 定义
 
@@ -174,38 +180,42 @@ recovered_by_nearest_endpoint
 以下结果使用：
 
 ```text
-experiment = 0014_same_val_r2r_eval_only_same_s0_v5
-dataset = R2R
+experiment = 0017_same_val_train_eval_all_r2r_reverie_cvdn_soon_same_s0_trace4ds_train_eval_v1
+datasets = R2R, REVERIE, SOON, CVDN
 target_scope = official
 ```
 
 ### 4.1 汇总表
 
-| split | items | final success | final SR | oracle success | oracle SR | oracle gap | overshoot | stop-too-early proxy | never reached | final SPL | oracle-stop SPL |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| val_train_seen | 1501 | 1332 | 88.74 | 1416 | 94.34 | 84 / 5.60pp | 84 / 5.60% | 18 / 1.20% | 67 / 4.46% | 85.01 | 93.37 |
-| val_unseen | 2349 | 1792 | 76.29 | 1992 | 84.80 | 200 / 8.51pp | 200 / 8.51% | 79 / 3.36% | 278 / 11.83% | 66.24 | 79.27 |
+| dataset | split | items | final success | final SR | oracle success | oracle SR | oracle gap | overshoot | stop-too-early proxy | never reached | final SPL | oracle-stop SPL |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| R2R | train_eval | 14039 | 12263 | 87.35 | 12903 | 91.91 | 640 / 4.56pp | 640 / 4.56% | 338 / 2.41% | 798 / 5.68% | 82.86 | 90.66 |
+| R2R | val_seen | 1021 | 819 | 80.22 | 884 | 86.58 | 65 / 6.37pp | 65 / 6.37% | 37 / 3.62% | 100 / 9.79% | 74.36 | 84.45 |
+| R2R | val_train_seen | 1501 | 1332 | 88.74 | 1416 | 94.34 | 84 / 5.60pp | 84 / 5.60% | 18 / 1.20% | 67 / 4.46% | 85.01 | 93.37 |
+| R2R | val_unseen | 2349 | 1792 | 76.29 | 1992 | 84.80 | 200 / 8.51pp | 200 / 8.51% | 79 / 3.36% | 278 / 11.83% | 66.24 | 79.27 |
+| REVERIE | train_eval | 10466 | 8532 | 81.52 | 9389 | 89.71 | 857 / 8.19pp | 857 / 8.19% | 353 / 3.37% | 724 / 6.92% | 76.97 | 87.33 |
+| REVERIE | val_seen | 1423 | 823 | 57.84 | 935 | 65.71 | 112 / 7.87pp | 112 / 7.87% | 69 / 4.85% | 419 / 29.44% | 52.54 | 60.90 |
+| REVERIE | val_train_seen | 123 | 103 | 83.74 | 115 | 93.50 | 12 / 9.76pp | 12 / 9.76% | 5 / 4.07% | 3 / 2.44% | 79.20 | 91.12 |
+| REVERIE | val_unseen | 3521 | 1614 | 45.84 | 1924 | 54.64 | 310 / 8.80pp | 310 / 8.80% | 296 / 8.41% | 1301 / 36.95% | 35.85 | 43.73 |
+| SOON | train_eval | 27800 | 19843 | 71.38 | 23311 | 83.85 | 3468 / 12.47pp | 3468 / 12.47% | 1171 / 4.21% | 3318 / 11.94% | 64.77 | 80.16 |
+| SOON | val_seen | 1130 | 579 | 51.24 | 696 | 61.59 | 117 / 10.35pp | 117 / 10.35% | 51 / 4.51% | 383 / 33.89% | 40.38 | 52.37 |
+| SOON | val_unseen | 3390 | 1232 | 36.34 | 1831 | 54.01 | 599 / 17.67pp | 599 / 17.67% | 303 / 8.94% | 1256 / 37.05% | 25.66 | 42.67 |
+| CVDN | train_eval | 4742 | 2161 | 45.57 | 3191 | 67.29 | 1030 / 21.72pp | 1030 / 21.72% | 229 / 4.83% | 1322 / 27.88% | 40.02 | 65.27 |
+| CVDN | val_seen | 382 | 108 | 28.27 | 180 | 47.12 | 72 / 18.85pp | 72 / 18.85% | 18 / 4.71% | 184 / 48.17% | 25.01 | 45.82 |
+| CVDN | val_unseen | 907 | 218 | 24.04 | 481 | 53.03 | 263 / 29.00pp | 263 / 29.00% | 52 / 5.73% | 374 / 41.23% | 16.98 | 47.41 |
 
 ### 4.2 val_unseen 失败拆解
 
-`val_unseen` 一共有 2349 条 episode：
+`official` scope 下，各数据集 `val_unseen` 的 final failure 拆解如下：
 
-```text
-final_success = 1792
-final_fail = 557
-oracle_success = 1992
-oracle_gap = 200
-```
+| dataset | items | final success | final fail | oracle success | oracle gap | overshoot | stop-too-early proxy | never reached |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| R2R | 2349 | 1792 | 557 | 1992 | 200 | 200 | 79 | 278 |
+| REVERIE | 3521 | 1614 | 1907 | 1924 | 310 | 310 | 296 | 1301 |
+| SOON | 3390 | 1232 | 2158 | 1831 | 599 | 599 | 303 | 1256 |
+| CVDN | 907 | 218 | 689 | 481 | 263 | 263 | 52 | 374 |
 
-557 个 final failure 可以拆成：
-
-```text
-overshoot / pass-but-not-stop = 200
-stop_too_early_proxy = 79
-never_reached = 278
-```
-
-其中 `oracle_gap = overshoot = 200`，说明当前 R2R official 口径下，所有可由“重新选择已访问 endpoint”恢复的失败，都表现为 pass-but-not-stop：
+所有数据集都满足 `oracle_gap = overshoot`，说明当前 official 口径下，所有可由“重新选择已访问 endpoint”恢复的失败，都表现为 pass-but-not-stop：
 
 ```text
 轨迹曾经进入成功区域，但 SAME 最终没有停在成功区域。
@@ -213,19 +223,29 @@ never_reached = 278
 
 这正好对应总路线里 endpoint completion 的核心目标。
 
-### 4.3 seen / unseen 差异
+### 4.3 跨数据集差异
 
-`val_train_seen` 的 oracle gap 是 5.60pp，`val_unseen` 的 oracle gap 是 8.51pp。unseen 上的 gap 更大，说明 endpoint / STOP 错误不是只在 seen split 出现的偶然现象。
+`val_unseen` 上的 oracle gap 在四个数据集都明显存在：
 
-同时，`val_unseen` 的 final SPL 是 66.24，而 oracle-stop SPL 是 79.27。这说明如果能在第一次成功位置停住，不只是 SR 有空间，路径效率指标也有明显空间。
+| dataset | items | final SR | oracle SR | oracle gap | final SPL -> oracle-stop SPL |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| R2R | 2349 | 76.29 | 84.80 | 200 / 8.51pp | 66.24 -> 79.27 |
+| REVERIE | 3521 | 45.84 | 54.64 | 310 / 8.80pp | 35.85 -> 43.73 |
+| SOON | 3390 | 36.34 | 54.01 | 599 / 17.67pp | 25.66 -> 42.67 |
+| CVDN | 907 | 24.04 | 53.03 | 263 / 29.00pp | 16.98 -> 47.41 |
+
+R2R 在 0017 中保留了旧报告里的核心数值：`val_train_seen` oracle gap 为 5.60pp，`val_unseen` oracle gap 为 8.51pp。新增的 REVERIE / SOON / CVDN 显示 endpoint / STOP 错误不是 R2R 单数据集现象；尤其是 SOON 和 CVDN 的 `val_unseen` gap 分别达到 17.67pp 和 29.00pp。
+
+同时，四个数据集的 `val_unseen` oracle-stop SPL 都高于 final SPL，说明如果能在第一次成功位置停住，不只是 SR 有空间，路径效率指标也有明显空间。
 
 ### 4.4 本阶段结论
 
 阶段 1 的结论是：
 
 ```text
-R2R val_unseen 上存在明确 oracle gap：8.51pp，200 条 episode。
-这些可恢复 gap 在当前口径下全部属于 overshoot / pass-but-not-stop。
+0017 official scope 下，R2R / REVERIE / SOON / CVDN 的 val_unseen 都存在明确 oracle gap。
+val_unseen oracle gap 分别为：R2R 8.51pp / 200 条，REVERIE 8.80pp / 310 条，SOON 17.67pp / 599 条，CVDN 29.00pp / 263 条。
+这些可恢复 gap 在当前 official 口径下全部属于 overshoot / pass-but-not-stop。
 因此 endpoint / STOP correction 有继续研究的必要。
 ```
 
@@ -241,5 +261,6 @@ R2R val_unseen 上存在明确 oracle gap：8.51pp，200 条 episode。
 
 ```text
 2026-04-29：补全阶段 1 oracle gap 报告草案，等待人工审核。
-2026-04-29：已人工审核.
+2026-04-29：已人工审核
+2026-04-29：R2R val 切换到 R2R / REVERIE / SOON / CVDN 数据集的全部split
 ```

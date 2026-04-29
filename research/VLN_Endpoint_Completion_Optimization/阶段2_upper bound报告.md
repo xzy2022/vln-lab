@@ -11,7 +11,7 @@ reviewed：人工已读并认可口径
 实验数据来源：
 
 ```text
-experiment_outputs/0014_same_val_r2r_eval_only_same_s0_v5
+experiment_outputs/0017_same_val_train_eval_all_r2r_reverie_cvdn_soon_same_s0_trace4ds_train_eval_v1
 ```
 
 ## 1. 本阶段作用
@@ -54,13 +54,13 @@ python scripts/analysis/build_oracle_gap_report.py \
 
 ```bash
 python scripts/analysis/build_oracle_gap_report.py \
-  --experiment-dir experiment_outputs/0014_same_val_r2r_eval_only_same_s0_v5
+  --experiment-dir experiment_outputs/0017_same_val_train_eval_all_r2r_reverie_cvdn_soon_same_s0_trace4ds_train_eval_v1
 ```
 
 默认输出目录也和阶段 1 相同：
 
 ```text
-experiment_outputs/0014_same_val_r2r_eval_only_same_s0_v5/oracle_gap_for_rl_research/
+experiment_outputs/0017_same_val_train_eval_all_r2r_reverie_cvdn_soon_same_s0_trace4ds_train_eval_v1/oracle_gap_for_rl_research/
 ```
 
 输出文件：
@@ -116,19 +116,25 @@ nearest_endpoint_spl = 在 best_distance_step 停止时的 SPL
 recovered_by_nearest_endpoint = final_success == false AND nearest_endpoint_success == true
 ```
 
-当前 R2R official scope 使用：
+当前 0017 official scope 使用：
 
 ```text
-success_mode = distance_threshold
-distance_key = distance_to_nav_goal_by_step_m
-success_threshold_m = 3.0
+R2R / SOON / CVDN official:
+  success_mode = distance_threshold
+  distance_key = distance_to_nav_goal_by_step_m
+  success_threshold_m = 3.0
+
+REVERIE official:
+  success_mode = exact_viewpoint
+  distance_key = distance_to_nearest_success_target_by_step_m
+  targets = success_target_viewpoints
 ```
 
-也就是距离目标小于 3m 视为成功。
+也就是 R2R / SOON / CVDN 按距离目标小于 3m 视为成功；REVERIE official 按是否进入成功 viewpoint 集合视为成功。
 
 ### 3.2 这是 oracle-style 上界
 
-nearest endpoint selection 使用 `distance_to_nav_goal_by_step_m`，这是 GT distance。它不能作为真实推理特征：
+nearest endpoint selection 使用 target scope 对应的 GT distance，例如 `distance_to_nav_goal_by_step_m` 或 `distance_to_nearest_success_target_by_step_m`。它不能作为真实推理特征：
 
 ```text
 不能用于 heuristic reranker 的选择规则
@@ -144,14 +150,14 @@ nearest endpoint selection 使用 `distance_to_nav_goal_by_step_m`，这是 GT d
 
 ### 3.3 与 oracle success 的关系
 
-在 R2R distance-threshold 成功口径下：
+在当前 0017 official scope 下：
 
 ```text
-oracle_success = trajectory 中至少有一个 step 距离目标 < 3m
-nearest_endpoint_success = 全 trajectory 最近 step 距离目标 < 3m
+oracle_success = trajectory 中至少有一个 step 满足 official success rule
+nearest_endpoint_success = 全 trajectory 最近 target / region 的 step 满足 official success rule
 ```
 
-因此当前 R2R official scope 下，`nearest_endpoint_success_rate` 与 `oracle_success_rate` 相同。
+因此当前 0017 official scope 下，`nearest_endpoint_success_rate` 与 `oracle_success_rate` 相同。
 
 但二者的 SPL 含义不同：
 
@@ -189,37 +195,40 @@ final_distance_m - best_distance_m
 以下结果使用：
 
 ```text
-experiment = 0014_same_val_r2r_eval_only_same_s0_v5
-dataset = R2R
+experiment = 0017_same_val_train_eval_all_r2r_reverie_cvdn_soon_same_s0_trace4ds_train_eval_v1
+datasets = R2R, REVERIE, SOON, CVDN
 target_scope = official
 ```
 
 ### 4.1 汇总表
 
-| split | items | final success | final SR | nearest success | nearest SR | delta SR | recovered by nearest | final SPL | nearest SPL | delta SPL | final dist | best dist | dist improvement |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| val_train_seen | 1501 | 1332 | 88.74 | 1416 | 94.34 | +5.60pp | 84 / 5.60% | 85.01 | 92.00 | +6.99pp | 1.28m | 0.62m | 0.65m |
-| val_unseen | 2349 | 1792 | 76.29 | 1992 | 84.80 | +8.51pp | 200 / 8.51% | 66.24 | 75.81 | +9.56pp | 2.72m | 1.40m | 1.32m |
+| dataset | split | items | final success | final SR | nearest success | nearest SR | delta SR | recovered by nearest | final SPL | nearest SPL | delta SPL | final dist | best dist | dist improvement |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| R2R | train_eval | 14039 | 12263 | 87.35 | 12903 | 91.91 | +4.56pp | 640 / 4.56% | 82.86 | 89.02 | +6.16pp | 1.42m | 0.77m | 0.65m |
+| R2R | val_seen | 1021 | 819 | 80.22 | 884 | 86.58 | +6.37pp | 65 / 6.37% | 74.36 | 82.56 | +8.20pp | 2.11m | 1.23m | 0.88m |
+| R2R | val_train_seen | 1501 | 1332 | 88.74 | 1416 | 94.34 | +5.60pp | 84 / 5.60% | 85.01 | 92.00 | +6.99pp | 1.28m | 0.62m | 0.65m |
+| R2R | val_unseen | 2349 | 1792 | 76.29 | 1992 | 84.80 | +8.51pp | 200 / 8.51% | 66.24 | 75.81 | +9.56pp | 2.72m | 1.40m | 1.32m |
+| REVERIE | train_eval | 10466 | 8532 | 81.52 | 9389 | 89.71 | +8.19pp | 857 / 8.19% | 76.97 | 87.33 | +10.36pp | 0.93m | 0.43m | 0.51m |
+| REVERIE | val_seen | 1423 | 823 | 57.84 | 935 | 65.71 | +7.87pp | 112 / 7.87% | 52.54 | 60.90 | +8.36pp | 4.38m | 2.46m | 1.92m |
+| REVERIE | val_train_seen | 123 | 103 | 83.74 | 115 | 93.50 | +9.76pp | 12 / 9.76% | 79.20 | 91.12 | +11.92pp | 0.52m | 0.19m | 0.33m |
+| REVERIE | val_unseen | 3521 | 1614 | 45.84 | 1924 | 54.64 | +8.80pp | 310 / 8.80% | 35.85 | 43.73 | +7.89pp | 4.93m | 2.36m | 2.57m |
+| SOON | train_eval | 27800 | 19843 | 71.38 | 23311 | 83.85 | +12.47pp | 3468 / 12.47% | 64.77 | 77.87 | +13.10pp | 3.15m | 1.55m | 1.60m |
+| SOON | val_seen | 1130 | 579 | 51.24 | 696 | 61.59 | +10.35pp | 117 / 10.35% | 40.38 | 49.96 | +9.58pp | 7.87m | 4.00m | 3.87m |
+| SOON | val_unseen | 3390 | 1232 | 36.34 | 1831 | 54.01 | +17.67pp | 599 / 17.67% | 25.66 | 39.78 | +14.12pp | 8.13m | 4.52m | 3.62m |
+| CVDN | train_eval | 4742 | 2161 | 45.57 | 3191 | 67.29 | +21.72pp | 1030 / 21.72% | 40.02 | 63.49 | +23.47pp | 8.11m | 3.57m | 4.53m |
+| CVDN | val_seen | 382 | 108 | 28.27 | 180 | 47.12 | +18.85pp | 72 / 18.85% | 25.01 | 44.05 | +19.04pp | 12.72m | 6.48m | 6.24m |
+| CVDN | val_unseen | 907 | 218 | 24.04 | 481 | 53.03 | +29.00pp | 263 / 29.00% | 16.98 | 43.96 | +26.98pp | 12.94m | 6.36m | 6.58m |
 
 ### 4.2 val_unseen 上界分析
 
-`val_unseen` 一共有 2349 条 episode：
+如果允许 oracle-style 选择 SAME 已访问过的最近 endpoint，`val_unseen` 上界如下：
 
-```text
-final_success = 1792
-nearest_endpoint_success = 1992
-recovered_by_nearest_endpoint = 200
-```
-
-因此，如果允许 oracle-style 选择 SAME 已访问过的最近 endpoint：
-
-```text
-SR: 76.29 -> 84.80，提升 8.51pp
-SPL: 66.24 -> 75.81，提升 9.56pp
-平均 final distance: 2.72m
-平均 best visited distance: 1.40m
-平均距离改善: 1.32m
-```
+| dataset | items | final success | nearest success | recovered | SR | SPL | final dist | best dist | dist improvement |
+| --- | ---: | ---: | ---: | ---: | --- | --- | ---: | ---: | ---: |
+| R2R | 2349 | 1792 | 1992 | 200 / 8.51% | 76.29 -> 84.80 (+8.51pp) | 66.24 -> 75.81 (+9.56pp) | 2.72m | 1.40m | 1.32m |
+| REVERIE | 3521 | 1614 | 1924 | 310 / 8.80% | 45.84 -> 54.64 (+8.80pp) | 35.85 -> 43.73 (+7.89pp) | 4.93m | 2.36m | 2.57m |
+| SOON | 3390 | 1232 | 1831 | 599 / 17.67% | 36.34 -> 54.01 (+17.67pp) | 25.66 -> 39.78 (+14.12pp) | 8.13m | 4.52m | 3.62m |
+| CVDN | 907 | 218 | 481 | 263 / 29.00% | 24.04 -> 53.03 (+29.00pp) | 16.98 -> 43.96 (+26.98pp) | 12.94m | 6.36m | 6.58m |
 
 这说明当前 SAME 的一部分失败不是“轨迹完全没有到过目标附近”，而是：
 
@@ -229,34 +238,38 @@ SPL: 66.24 -> 75.81，提升 9.56pp
 
 ### 4.3 与阶段 1 的衔接
 
-阶段 1 中 `val_unseen` 的 oracle gap 是：
+阶段 1 中 `val_unseen` 的 oracle gap 与阶段 2 中 `val_unseen` 的 nearest recovery 一致：
+
+| dataset | oracle gap | nearest recovery |
+| --- | ---: | ---: |
+| R2R | 200 / 2349 = 8.51pp | 200 / 2349 = 8.51% |
+| REVERIE | 310 / 3521 = 8.80pp | 310 / 3521 = 8.80% |
+| SOON | 599 / 3390 = 17.67pp | 599 / 3390 = 17.67% |
+| CVDN | 263 / 907 = 29.00pp | 263 / 907 = 29.00% |
+
+在当前 0017 official scope 下，两者相同，原因是：
 
 ```text
-200 / 2349 = 8.51pp
-```
-
-阶段 2 中 `val_unseen` 的 nearest recovery 也是：
-
-```text
-200 / 2349 = 8.51%
-```
-
-在当前 R2R official scope 下，两者相同，原因是：
-
-```text
-只要 trajectory 曾经进入成功区域，trajectory 的最近目标点也一定成功。
+只要 trajectory 曾经进入成功区域，trajectory 的最近 target / region 点也一定成功。
 ```
 
 所以阶段 2 的结论可以直接承接阶段 1：
 
 ```text
-阶段 1 证明存在 200 条 pass-but-not-stop 可恢复样本；
-阶段 2 证明如果能 oracle-style 从已访问 endpoint 中选最近点，这 200 条可以全部恢复到成功口径。
+阶段 1 证明 0017 official scope 下存在 pass-but-not-stop 可恢复样本；
+阶段 2 证明如果能 oracle-style 从已访问 endpoint 中选最近点，这些样本可以全部恢复到成功口径。
 ```
 
 ### 4.4 SPL 解释
 
-`val_unseen` 的 first-success oracle-stop SPL 是 79.27，而 nearest endpoint SPL 是 75.81。
+`val_unseen` 的 first-success oracle-stop SPL 与 nearest endpoint SPL 如下：
+
+| dataset | first-success oracle SPL | nearest SPL | nearest - first-success |
+| --- | ---: | ---: | ---: |
+| R2R | 79.27 | 75.81 | -3.46pp |
+| REVERIE | 43.73 | 43.73 | +0.00pp |
+| SOON | 42.67 | 39.78 | -2.89pp |
+| CVDN | 47.41 | 43.96 | -3.45pp |
 
 这不是矛盾。原因是：
 
@@ -278,8 +291,11 @@ nearest_endpoint_spl 假设走到全轨迹最近目标点再停；
 阶段 2 的结论是：
 
 ```text
-R2R val_unseen 上，只在 SAME 已访问 endpoint 中 oracle-style 选最近点，
-SR 可从 76.29 提升到 84.80，SPL 可从 66.24 提升到 75.81。
+0017 official scope 的 val_unseen 上，只在 SAME 已访问 endpoint 中 oracle-style 选最近点：
+R2R：SR 76.29 -> 84.80，SPL 66.24 -> 75.81。
+REVERIE：SR 45.84 -> 54.64，SPL 35.85 -> 43.73。
+SOON：SR 36.34 -> 54.01，SPL 25.66 -> 39.78。
+CVDN：SR 24.04 -> 53.03，SPL 16.98 -> 43.96。
 ```
 
 这说明：
@@ -301,5 +317,6 @@ SR 可从 76.29 提升到 84.80，SPL 可从 66.24 提升到 75.81。
 
 ```text
 2026-04-29：补全阶段 2 nearest endpoint upper bound 报告草案，等待人工审核。
-2026-04-29: 已人工审核.
+2026-04-29: 已人工审核
+2026-04-29：R2R val 切换到 R2R / REVERIE / SOON / CVDN 数据集的全部split
 ```
