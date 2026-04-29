@@ -377,8 +377,8 @@ def train_endpoint_gate_baseline(
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    episodes = pd.read_csv(episode_csv)
-    candidates = pd.read_csv(candidate_csv)
+    episodes = pd.read_csv(episode_csv, low_memory=False)
+    candidates = pd.read_csv(candidate_csv, low_memory=False)
     episodes = episodes[episodes["target_scope"] == target_scope].copy()
     candidates = candidates[candidates["target_scope"] == target_scope].copy()
     if episodes.empty:

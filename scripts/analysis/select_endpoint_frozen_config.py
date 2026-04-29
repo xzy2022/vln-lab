@@ -45,6 +45,10 @@ DEFAULT_GATE_THRESHOLDS = (
     0.65,
     0.7,
     0.75,
+    0.8,
+    0.85,
+    0.9,
+    0.95,
 )
 DEFAULT_TAUS = (0.0, 0.01, 0.02, 0.03, 0.05, 0.075, 0.1, 0.15, 0.2, 0.3)
 DEFAULT_ALLOW_CHANGE_FINAL = (True, False)
@@ -77,6 +81,10 @@ SELECTION_GRID_COLUMNS = [
     "gate_pass_rate",
     "gate_precision",
     "gate_recall",
+    "dataset_count",
+    "max_dataset_harm_rate",
+    "worst_harm_dataset",
+    "max_dataset_final_success_harm_rate",
     "overshoot_items",
     "overshoot_recovery_rate",
     "final_success_harm_rate",
@@ -127,6 +135,14 @@ SLICE_SUMMARY_COLUMNS = [
     "recovered_items",
     "harmed_items",
     "changed_items",
+]
+
+CONFIG_KEY_COLUMNS = [
+    "experiment_id",
+    "target_scope",
+    "gate_threshold",
+    "tau",
+    "allow_change_final",
 ]
 
 
@@ -195,6 +211,16 @@ def parse_args() -> argparse.Namespace:
         help="Split used for config selection. Defaults to dev.",
     )
     parser.add_argument(
+        "--selection-aggregation",
+        choices=("weighted", "per-dataset"),
+        default="weighted",
+        help=(
+            "How to select from multi-dataset dev summaries. weighted aggregates rows by "
+            "items for each config before selection; per-dataset keeps the legacy per-row "
+            "selection behavior. Defaults to weighted."
+        ),
+    )
+    parser.add_argument(
         "--diagnostic-splits",
         default=",".join(DEFAULT_DIAGNOSTIC_SPLITS),
         help="Comma-separated train/dev diagnostics for the selected config. Defaults to train,dev.",
@@ -231,6 +257,15 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.01,
         help="Maximum dev harm_rate for an eligible config. Defaults to 0.01.",
+    )
+    parser.add_argument(
+        "--max-dataset-harm-rate",
+        type=float,
+        default=None,
+        help=(
+            "Maximum harm_rate for any individual dataset under weighted selection. "
+            "Defaults to --max-harm-rate."
+        ),
     )
     parser.add_argument(
         "--allow-frozen-final-fallback",
@@ -288,6 +323,7 @@ def main() -> None:
         ranker_model_joblib=ranker_model_joblib,
         target_scope=args.target_scope,
         selection_split=args.selection_split,
+        selection_aggregation=args.selection_aggregation,
         diagnostic_splits=parse_string_list(args.diagnostic_splits),
         gate_thresholds=tuple(parse_float_list(args.gate_thresholds)),
         taus=tuple(parse_float_list(args.taus)),
@@ -295,6 +331,7 @@ def main() -> None:
         min_delta_sr=args.min_delta_sr,
         min_delta_spl=args.min_delta_spl,
         max_harm_rate=args.max_harm_rate,
+        max_dataset_harm_rate=args.max_dataset_harm_rate,
         allow_frozen_final_fallback=args.allow_frozen_final_fallback,
     )
     print(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))
@@ -311,6 +348,7 @@ def select_endpoint_frozen_config(
     ranker_model_joblib: Path,
     target_scope: str = DEFAULT_TARGET_SCOPE,
     selection_split: str = DEFAULT_SELECTION_SPLIT,
+    selection_aggregation: str = "weighted",
     diagnostic_splits: tuple[str, ...] = DEFAULT_DIAGNOSTIC_SPLITS,
     gate_thresholds: tuple[float, ...] = DEFAULT_GATE_THRESHOLDS,
     taus: tuple[float, ...] = DEFAULT_TAUS,
@@ -318,9 +356,11 @@ def select_endpoint_frozen_config(
     min_delta_sr: float = 0.0,
     min_delta_spl: float = 0.0,
     max_harm_rate: float = 0.01,
+    max_dataset_harm_rate: float | None = None,
     allow_frozen_final_fallback: bool = False,
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
+    resolved_max_dataset_harm_rate = max_harm_rate if max_dataset_harm_rate is None else max_dataset_harm_rate
 
     dev_grid_dir = output_dir / "dev_grid_eval_protocol"
     dev_eval_manifest = reranker_eval.evaluate_endpoint_reranker(
@@ -342,11 +382,18 @@ def select_endpoint_frozen_config(
     if summary.empty:
         raise ValueError("Dev selection grid produced no summary rows")
     summary = normalize_summary_frame(summary)
+    dataset_grid = add_dataset_guard_columns(summary)
+    selection_summary = build_selection_summary(
+        summary,
+        selection_aggregation=selection_aggregation,
+        selection_split=selection_split,
+    )
     selection_grid, selected_row = choose_config(
-        summary=summary,
+        summary=selection_summary,
         min_delta_sr=min_delta_sr,
         min_delta_spl=min_delta_spl,
         max_harm_rate=max_harm_rate,
+        max_dataset_harm_rate=resolved_max_dataset_harm_rate,
         allow_frozen_final_fallback=allow_frozen_final_fallback,
     )
 
@@ -356,7 +403,7 @@ def select_endpoint_frozen_config(
         "allow_change_final": bool(selected_row["allow_change_final"]),
     }
 
-    dev_items = pd.read_csv(resolve_manifest_path(dev_eval_manifest["files"]["items_csv"]))
+    dev_items = pd.read_csv(resolve_manifest_path(dev_eval_manifest["files"]["items_csv"]), low_memory=False)
     selected_items = filter_items_for_config(dev_items, selected_config)
     selected_items = add_failure_slice_columns(selected_items, candidate_csv)
     slice_summary = build_slice_summary(selected_items)
@@ -379,13 +426,19 @@ def select_endpoint_frozen_config(
     frozen_summary = pd.read_csv(resolve_manifest_path(frozen_eval_manifest["files"]["summary_csv"]))
 
     selection_grid_csv = output_dir / "dev_selection_grid.csv"
+    dataset_grid_csv = output_dir / "dev_selection_dataset_grid.csv"
     selected_items_csv = output_dir / "dev_selected_items.csv"
     slice_summary_csv = output_dir / "failure_slice_summary.csv"
     frozen_config_json = output_dir / "frozen_config.json"
     report_md = output_dir / "dev_selection_report.md"
     manifest_json = output_dir / "manifest.json"
 
-    selection_grid.to_csv(selection_grid_csv, index=False, columns=SELECTION_GRID_COLUMNS)
+    ensure_columns(selection_grid, SELECTION_GRID_COLUMNS).to_csv(
+        selection_grid_csv,
+        index=False,
+        columns=SELECTION_GRID_COLUMNS,
+    )
+    dataset_grid.to_csv(dataset_grid_csv, index=False)
     selected_items.to_csv(selected_items_csv, index=False, columns=FAILURE_ITEM_COLUMNS)
     slice_summary.to_csv(slice_summary_csv, index=False, columns=SLICE_SUMMARY_COLUMNS)
 
@@ -394,6 +447,7 @@ def select_endpoint_frozen_config(
         selected_config=selected_config,
         target_scope=target_scope,
         selection_split=selection_split,
+        selection_aggregation=selection_aggregation,
         diagnostic_splits=diagnostic_splits,
         candidate_csv=candidate_csv,
         episode_csv=episode_csv,
@@ -405,6 +459,7 @@ def select_endpoint_frozen_config(
         min_delta_sr=min_delta_sr,
         min_delta_spl=min_delta_spl,
         max_harm_rate=max_harm_rate,
+        max_dataset_harm_rate=resolved_max_dataset_harm_rate,
         allow_frozen_final_fallback=allow_frozen_final_fallback,
     )
     write_json(frozen_config_json, frozen_config)
@@ -414,6 +469,7 @@ def select_endpoint_frozen_config(
         "generated_at_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
         "target_scope": target_scope,
         "selection_split": selection_split,
+        "selection_aggregation": selection_aggregation,
         "diagnostic_splits": list(diagnostic_splits),
         "selection_constraints": frozen_config["selection_constraints"],
         "selected_config": selected_config,
@@ -423,6 +479,7 @@ def select_endpoint_frozen_config(
             "episode_csv": path_to_string(episode_csv),
             "score_csv": path_to_string(score_csv),
             "dev_selection_grid_csv": path_to_string(selection_grid_csv),
+            "dev_selection_dataset_grid_csv": path_to_string(dataset_grid_csv),
             "dev_selected_items_csv": path_to_string(selected_items_csv),
             "failure_slice_summary_csv": path_to_string(slice_summary_csv),
             "frozen_config_json": path_to_string(frozen_config_json),
@@ -444,19 +501,175 @@ def select_endpoint_frozen_config(
     return manifest
 
 
+def build_selection_summary(
+    summary: pd.DataFrame,
+    selection_aggregation: str,
+    selection_split: str,
+) -> pd.DataFrame:
+    if selection_aggregation == "per-dataset":
+        return add_dataset_guard_columns(summary)
+    if selection_aggregation != "weighted":
+        raise ValueError(f"Unsupported selection_aggregation={selection_aggregation!r}")
+
+    rows: list[dict[str, Any]] = []
+    for _, group in summary.groupby(CONFIG_KEY_COLUMNS, dropna=False, sort=True):
+        rows.append(aggregate_config_group(group, selection_split=selection_split))
+    return pd.DataFrame(rows)
+
+
+def add_dataset_guard_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    enriched = frame.copy()
+    enriched["dataset_count"] = 1
+    enriched["max_dataset_harm_rate"] = enriched.get("harm_rate", math.nan)
+    enriched["worst_harm_dataset"] = enriched.get("dataset", "")
+    enriched["max_dataset_final_success_harm_rate"] = enriched.get("final_success_harm_rate", math.nan)
+    return enriched
+
+
+def aggregate_config_group(group: pd.DataFrame, selection_split: str) -> dict[str, Any]:
+    first = group.iloc[0]
+    row: dict[str, Any] = {
+        "experiment_id": first.get("experiment_id"),
+        "dataset": "ALL",
+        "split": "weighted",
+        "protocol_split": selection_split,
+        "target_scope": first.get("target_scope"),
+        "gate_threshold": first.get("gate_threshold"),
+        "tau": first.get("tau"),
+        "allow_change_final": first.get("allow_change_final"),
+        "items": int(pd.to_numeric(group["items"], errors="coerce").fillna(0).sum()),
+        "overshoot_items": int(pd.to_numeric(group.get("overshoot_items", 0), errors="coerce").fillna(0).sum()),
+        "final_success_items": int(pd.to_numeric(group.get("final_success_items", 0), errors="coerce").fillna(0).sum()),
+        "dataset_count": int(group["dataset"].nunique(dropna=True)) if "dataset" in group.columns else int(len(group)),
+    }
+
+    item_weighted_columns = [
+        "final_SR",
+        "SR",
+        "oracle_success_rate",
+        "nearest_endpoint_success_rate",
+        "final_SPL",
+        "SPL",
+        "nearest_endpoint_SPL",
+        "recovery_rate",
+        "harm_rate",
+        "changed_endpoint_rate",
+        "gate_pass_rate",
+        "gate_auc",
+        "mean_gate_score",
+        "mean_score_margin_over_final",
+    ]
+    for column in item_weighted_columns:
+        if column in group.columns:
+            row[column] = weighted_mean(group, column, "items")
+
+    row["delta_SR"] = subtract_or_nan(row.get("SR"), row.get("final_SR"))
+    row["delta_SPL"] = subtract_or_nan(row.get("SPL"), row.get("final_SPL"))
+    row["net_recovery_rate"] = subtract_or_nan(row.get("recovery_rate"), row.get("harm_rate"))
+    row["gap_capture_rate"] = safe_divide(
+        row.get("delta_SR", math.nan),
+        subtract_or_nan(row.get("nearest_endpoint_success_rate"), row.get("final_SR")),
+    )
+
+    row["overshoot_recovery_rate"] = weighted_mean(group, "overshoot_recovery_rate", "overshoot_items")
+    row["final_success_harm_rate"] = weighted_mean(group, "final_success_harm_rate", "final_success_items")
+
+    gate_pass_items = sum_rate_count(group, "gate_pass_rate", "items")
+    gate_true_pass_items = sum_product_rates(group, "gate_precision", "gate_pass_rate", "items")
+    if not math.isfinite(gate_true_pass_items):
+        gate_true_pass_items = sum_rate_count(group, "gate_recall", "overshoot_items")
+    row["gate_precision"] = safe_divide(gate_true_pass_items, gate_pass_items)
+    row["gate_recall"] = safe_divide(gate_true_pass_items, row["overshoot_items"])
+
+    if "harm_rate" in group.columns and not group.empty:
+        harm_rates = pd.to_numeric(group["harm_rate"], errors="coerce")
+        valid_harm_rates = harm_rates.dropna()
+        if valid_harm_rates.empty:
+            row["max_dataset_harm_rate"] = math.nan
+            row["worst_harm_dataset"] = None
+        else:
+            worst_index = valid_harm_rates.idxmax()
+            row["max_dataset_harm_rate"] = float(valid_harm_rates.loc[worst_index])
+            row["worst_harm_dataset"] = group.loc[worst_index, "dataset"] if "dataset" in group.columns else None
+    else:
+        row["max_dataset_harm_rate"] = math.nan
+        row["worst_harm_dataset"] = None
+
+    if "final_success_harm_rate" in group.columns:
+        row["max_dataset_final_success_harm_rate"] = pd.to_numeric(
+            group["final_success_harm_rate"],
+            errors="coerce",
+        ).max()
+    else:
+        row["max_dataset_final_success_harm_rate"] = math.nan
+
+    return row
+
+
+def weighted_mean(frame: pd.DataFrame, value_column: str, weight_column: str) -> float:
+    if value_column not in frame.columns or weight_column not in frame.columns:
+        return math.nan
+    values = pd.to_numeric(frame[value_column], errors="coerce")
+    weights = pd.to_numeric(frame[weight_column], errors="coerce")
+    mask = values.notna() & weights.notna() & (weights > 0)
+    if not mask.any():
+        return math.nan
+    return float((values[mask] * weights[mask]).sum() / weights[mask].sum())
+
+
+def sum_rate_count(frame: pd.DataFrame, rate_column: str, count_column: str) -> float:
+    if rate_column not in frame.columns or count_column not in frame.columns:
+        return math.nan
+    rates = pd.to_numeric(frame[rate_column], errors="coerce")
+    counts = pd.to_numeric(frame[count_column], errors="coerce")
+    mask = rates.notna() & counts.notna()
+    if not mask.any():
+        return math.nan
+    return float((rates[mask] * counts[mask]).sum())
+
+
+def sum_product_rates(frame: pd.DataFrame, first_rate_column: str, second_rate_column: str, count_column: str) -> float:
+    missing = [column for column in (first_rate_column, second_rate_column, count_column) if column not in frame.columns]
+    if missing:
+        return math.nan
+    first = pd.to_numeric(frame[first_rate_column], errors="coerce")
+    second = pd.to_numeric(frame[second_rate_column], errors="coerce")
+    counts = pd.to_numeric(frame[count_column], errors="coerce")
+    mask = first.notna() & second.notna() & counts.notna()
+    if not mask.any():
+        return math.nan
+    return float((first[mask] * second[mask] * counts[mask]).sum())
+
+
+def subtract_or_nan(left: Any, right: Any) -> float:
+    try:
+        left_value = float(left)
+        right_value = float(right)
+    except (TypeError, ValueError):
+        return math.nan
+    if not math.isfinite(left_value) or not math.isfinite(right_value):
+        return math.nan
+    return left_value - right_value
+
+
 def choose_config(
     summary: pd.DataFrame,
     min_delta_sr: float,
     min_delta_spl: float,
     max_harm_rate: float,
+    max_dataset_harm_rate: float | None,
     allow_frozen_final_fallback: bool,
 ) -> tuple[pd.DataFrame, pd.Series]:
     grid = summary.copy()
+    if "max_dataset_harm_rate" not in grid.columns:
+        grid["max_dataset_harm_rate"] = math.nan
     grid["eligible"] = (
         (grid["delta_SR"] >= min_delta_sr - EPS)
         & (grid["delta_SPL"] >= min_delta_spl - EPS)
         & (grid["harm_rate"] <= max_harm_rate + EPS)
     )
+    if max_dataset_harm_rate is not None and "max_dataset_harm_rate" in grid.columns:
+        grid["eligible"] = grid["eligible"] & (grid["max_dataset_harm_rate"] <= max_dataset_harm_rate + EPS)
     grid["selection_pool"] = ""
     grid["selected"] = False
     grid["selection_rank"] = pd.NA
@@ -465,7 +678,8 @@ def choose_config(
     if eligible.empty:
         raise ValueError(
             "No config passed the selection constraints. "
-            f"min_delta_sr={min_delta_sr}, min_delta_spl={min_delta_spl}, max_harm_rate={max_harm_rate}"
+            f"min_delta_sr={min_delta_sr}, min_delta_spl={min_delta_spl}, "
+            f"max_harm_rate={max_harm_rate}, max_dataset_harm_rate={max_dataset_harm_rate}"
         )
 
     change_enabled = eligible[eligible["allow_change_final"] == True].copy()  # noqa: E712
@@ -486,13 +700,14 @@ def choose_config(
             "delta_SR",
             "net_recovery_rate",
             "harm_rate",
+            "max_dataset_harm_rate",
             "changed_endpoint_rate",
             "gate_pass_rate",
             "delta_SPL",
             "gate_threshold",
             "tau",
         ],
-        ascending=[False, False, True, True, True, False, False, False],
+        ascending=[False, False, True, True, True, True, False, False, False],
         na_position="last",
     ).reset_index()
     pool["selection_rank"] = range(1, len(pool) + 1)
@@ -523,9 +738,13 @@ def normalize_summary_frame(summary: pd.DataFrame) -> pd.DataFrame:
         "final_SR",
         "SR",
         "delta_SR",
+        "oracle_success_rate",
+        "nearest_endpoint_success_rate",
+        "gap_capture_rate",
         "final_SPL",
         "SPL",
         "delta_SPL",
+        "nearest_endpoint_SPL",
         "recovery_rate",
         "harm_rate",
         "net_recovery_rate",
@@ -533,9 +752,16 @@ def normalize_summary_frame(summary: pd.DataFrame) -> pd.DataFrame:
         "gate_pass_rate",
         "gate_precision",
         "gate_recall",
+        "gate_auc",
         "overshoot_items",
         "overshoot_recovery_rate",
+        "final_success_items",
         "final_success_harm_rate",
+        "mean_gate_score",
+        "mean_score_margin_over_final",
+        "dataset_count",
+        "max_dataset_harm_rate",
+        "max_dataset_final_success_harm_rate",
     ]
     for column in numeric_columns:
         if column in frame.columns:
@@ -560,7 +786,7 @@ def filter_items_for_config(items: pd.DataFrame, selected_config: dict[str, Any]
 
 
 def add_failure_slice_columns(items: pd.DataFrame, candidate_csv: Path) -> pd.DataFrame:
-    candidates = pd.read_csv(candidate_csv)
+    candidates = pd.read_csv(candidate_csv, low_memory=False)
     candidates = candidates.set_index("candidate_id", drop=False)
     best_success_map = candidates["success_label"].map(parse_bool_value).to_dict()
     best_spl_map = pd.to_numeric(candidates["spl_at_candidate"], errors="coerce").to_dict()
@@ -633,6 +859,7 @@ def build_frozen_config(
     selected_config: dict[str, Any],
     target_scope: str,
     selection_split: str,
+    selection_aggregation: str,
     diagnostic_splits: tuple[str, ...],
     candidate_csv: Path,
     episode_csv: Path,
@@ -644,6 +871,7 @@ def build_frozen_config(
     min_delta_sr: float,
     min_delta_spl: float,
     max_harm_rate: float,
+    max_dataset_harm_rate: float | None,
     allow_frozen_final_fallback: bool,
 ) -> dict[str, Any]:
     gate_model_payload = read_json_if_exists(gate_model_json)
@@ -654,6 +882,7 @@ def build_frozen_config(
         "status": "frozen_on_train_dev",
         "target_scope": target_scope,
         "selection_split": selection_split,
+        "selection_aggregation": selection_aggregation,
         "diagnostic_splits": list(diagnostic_splits),
         "val_unseen_used_for_selection": False,
         "selected_config": selected_config,
@@ -661,11 +890,13 @@ def build_frozen_config(
             "min_delta_sr": min_delta_sr,
             "min_delta_spl": min_delta_spl,
             "max_harm_rate": max_harm_rate,
+            "max_dataset_harm_rate": max_dataset_harm_rate,
             "allow_frozen_final_fallback": allow_frozen_final_fallback,
             "selection_order": [
                 "max delta_SR",
                 "max net_recovery_rate",
                 "min harm_rate",
+                "min max_dataset_harm_rate",
                 "min changed_endpoint_rate",
                 "min gate_pass_rate",
                 "max delta_SPL",
@@ -726,6 +957,7 @@ def write_report(
         f"- schema_version: `{SCHEMA_VERSION}`",
         f"- target_scope: `{manifest['target_scope']}`",
         f"- selection_split: `{manifest['selection_split']}`",
+        f"- selection_aggregation: `{manifest.get('selection_aggregation', 'weighted')}`",
         f"- diagnostic_splits: `{','.join(manifest['diagnostic_splits'])}`",
         "- model training: no new training in this stage",
         "- selection data: train/dev only",
@@ -751,6 +983,8 @@ def write_report(
                 "gate_pass",
                 "gate_precision",
                 "gate_recall",
+                "max_dataset_harm",
+                "worst_harm_dataset",
             ],
             [
                 [
@@ -764,6 +998,8 @@ def write_report(
                     pct(dev_metrics.get("gate_pass_rate")),
                     pct(dev_metrics.get("gate_precision")),
                     pct(dev_metrics.get("gate_recall")),
+                    pct(dev_metrics.get("max_dataset_harm_rate")),
+                    dev_metrics.get("worst_harm_dataset", "NA"),
                 ]
             ],
         ),
@@ -771,10 +1007,24 @@ def write_report(
         "## Top Eligible Configs",
         "",
         markdown_table(
-            ["rank", "gate", "tau", "allow", "dSR", "dSPL", "recovery", "harm", "changed", "gate_pass"],
+            [
+                "rank",
+                "dataset",
+                "gate",
+                "tau",
+                "allow",
+                "dSR",
+                "dSPL",
+                "recovery",
+                "harm",
+                "max_dataset_harm",
+                "changed",
+                "gate_pass",
+            ],
             [
                 [
                     int(row["selection_rank"]),
+                    row.get("dataset", "NA"),
                     fmt(row["gate_threshold"]),
                     fmt(row["tau"]),
                     str(bool(row["allow_change_final"])).lower(),
@@ -782,6 +1032,7 @@ def write_report(
                     pct(row["delta_SPL"]),
                     pct(row["recovery_rate"]),
                     pct(row["harm_rate"]),
+                    pct(row.get("max_dataset_harm_rate")),
                     pct(row["changed_endpoint_rate"]),
                     pct(row["gate_pass_rate"]),
                 ]
@@ -811,9 +1062,10 @@ def write_report(
         "## Frozen Train/Dev Diagnostics",
         "",
         markdown_table(
-            ["split", "SR", "delta_SR", "SPL", "delta_SPL", "recovery", "harm", "changed"],
+            ["dataset", "split", "SR", "delta_SR", "SPL", "delta_SPL", "recovery", "harm", "changed"],
             [
                 [
+                    row.get("dataset", "NA"),
                     row["protocol_split"],
                     pct(row["SR"]),
                     pct(row["delta_SR"]),
@@ -845,6 +1097,14 @@ def resolve_endpoint_learning_dir(experiment_dir: Path | None, endpoint_learning
 
 def resolve_path(explicit: str | None, default: Path) -> Path:
     return Path(explicit).resolve() if explicit else default.resolve()
+
+
+def ensure_columns(frame: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    ensured = frame.copy()
+    for column in columns:
+        if column not in ensured.columns:
+            ensured[column] = pd.NA
+    return ensured
 
 
 def read_json_if_exists(path: Path) -> dict[str, Any]:
@@ -927,9 +1187,16 @@ def jsonable_value(value: Any) -> Any:
 
 
 def safe_divide(numerator: int | float, denominator: int | float) -> float:
-    if denominator == 0:
+    try:
+        numerator_value = float(numerator)
+        denominator_value = float(denominator)
+    except (TypeError, ValueError):
         return math.nan
-    return float(numerator) / float(denominator)
+    if not math.isfinite(numerator_value) or not math.isfinite(denominator_value):
+        return math.nan
+    if denominator_value == 0:
+        return math.nan
+    return numerator_value / denominator_value
 
 
 def path_to_string(path: Path) -> str:

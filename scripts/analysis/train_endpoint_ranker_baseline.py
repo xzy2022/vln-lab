@@ -368,8 +368,8 @@ def train_endpoint_ranker_baseline(
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    candidates = pd.read_csv(candidate_csv)
-    episodes = pd.read_csv(episode_csv)
+    candidates = pd.read_csv(candidate_csv, low_memory=False)
+    episodes = pd.read_csv(episode_csv, low_memory=False)
     candidates = candidates[candidates["target_scope"] == target_scope].copy()
     episodes = episodes[episodes["target_scope"] == target_scope].copy()
     if candidates.empty:
