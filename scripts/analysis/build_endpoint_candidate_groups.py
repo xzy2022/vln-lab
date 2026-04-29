@@ -29,10 +29,17 @@ SCHEMA_VERSION = "endpoint_candidate_groups.v1"
 DEFAULT_TARGET_SCOPES = ("official",)
 DEFAULT_DEV_RATIO = 0.2
 DEFAULT_DEV_SALT = "endpoint_learning.v1"
+DEFAULT_PROTOCOL_SPLIT_POLICY = "auto"
 DEFAULT_LAST_K = 5
 DEFAULT_LOOP_WINDOW = 10
 DEFAULT_REWARD_ALPHA = 1.0
 EPS = 1e-9
+
+TRAIN_LIKE_SPLITS = {"train", "train_eval", "train_seen"}
+VAL_TRAIN_SEEN_SPLIT = "val_train_seen"
+SEEN_HELDOUT_SPLITS = {"val_seen"}
+UNSEEN_HELDOUT_SPLITS = {"val_unseen"}
+GENERIC_DEV_SPLITS = {"dev", "validation"}
 
 CANDIDATE_FEATURE_COLUMNS = [
     "is_final",
@@ -264,10 +271,27 @@ def parse_args() -> argparse.Namespace:
         help="Comma-separated target scopes to build. Defaults to official.",
     )
     parser.add_argument(
+        "--datasets",
+        default=None,
+        help="Optional comma-separated dataset filter, such as R2R or R2R,REVERIE. Defaults to all discovered datasets.",
+    )
+    parser.add_argument(
+        "--protocol-split-policy",
+        choices=("auto", "legacy"),
+        default=DEFAULT_PROTOCOL_SPLIT_POLICY,
+        help=(
+            "How to assign protocol_split. auto keeps val_seen/val_unseen held out and uses "
+            "val_train_seen or a train-like hash split for dev. legacy preserves the old mapping."
+        ),
+    )
+    parser.add_argument(
         "--dev-ratio",
         type=float,
         default=DEFAULT_DEV_RATIO,
-        help="Hash split ratio used to mark val_train_seen episodes as dev.",
+        help=(
+            "Hash split ratio used when auto policy must carve dev from a train-like split, "
+            "or by legacy policy for val_train_seen."
+        ),
     )
     parser.add_argument(
         "--dev-salt",
@@ -301,12 +325,15 @@ def main() -> None:
     fine_metrics_dir = Path(args.fine_metrics_dir) if args.fine_metrics_dir else experiment_dir / "fine_metrics"
     output_dir = Path(args.output_dir) if args.output_dir else experiment_dir / DEFAULT_OUTPUT_NAME
     target_scopes = tuple(scope.strip() for scope in args.target_scopes.split(",") if scope.strip())
+    datasets = parse_optional_list(args.datasets)
 
     build_endpoint_candidate_groups(
         experiment_dir=experiment_dir,
         fine_metrics_dir=fine_metrics_dir,
         output_dir=output_dir,
         target_scopes=target_scopes,
+        datasets=datasets,
+        protocol_split_policy=args.protocol_split_policy,
         dev_ratio=args.dev_ratio,
         dev_salt=args.dev_salt,
         last_k=args.last_k,
@@ -320,6 +347,8 @@ def build_endpoint_candidate_groups(
     fine_metrics_dir: Path,
     output_dir: Path,
     target_scopes: tuple[str, ...] = DEFAULT_TARGET_SCOPES,
+    datasets: tuple[str, ...] | None = None,
+    protocol_split_policy: str = DEFAULT_PROTOCOL_SPLIT_POLICY,
     dev_ratio: float = DEFAULT_DEV_RATIO,
     dev_salt: str = DEFAULT_DEV_SALT,
     last_k: int = DEFAULT_LAST_K,
@@ -328,6 +357,8 @@ def build_endpoint_candidate_groups(
 ) -> dict[str, Any]:
     if not 0.0 <= dev_ratio <= 1.0:
         raise ValueError(f"--dev-ratio must be in [0, 1], got {dev_ratio}")
+    if protocol_split_policy not in {"auto", "legacy"}:
+        raise ValueError(f"Unsupported --protocol-split-policy: {protocol_split_policy}")
     if last_k <= 0:
         raise ValueError(f"--last-k must be positive, got {last_k}")
     if loop_window <= 0:
@@ -339,8 +370,12 @@ def build_endpoint_candidate_groups(
     eval_items_dir = experiment_dir / "eval_items"
 
     sources = oracle_gap.discover_eval_item_sources(eval_items_dir)
+    if datasets:
+        dataset_set = set(datasets)
+        sources = [source for source in sources if source.dataset in dataset_set]
     if not sources:
         raise FileNotFoundError(f"No eval_items contexts found in {eval_items_dir}")
+    split_inventory = build_split_inventory(sources)
 
     fine_rows = oracle_gap.load_fine_metrics_wide(fine_metrics_dir / "tables" / "fine_metrics_wide.csv")
 
@@ -371,6 +406,8 @@ def build_endpoint_candidate_groups(
                 dataset=source.dataset,
                 split=source.split,
                 internal_item_id=str(identity.get("internal_item_id")),
+                dataset_splits=split_inventory[source.dataset],
+                policy=protocol_split_policy,
                 dev_ratio=dev_ratio,
                 salt=dev_salt,
             )
@@ -414,10 +451,20 @@ def build_endpoint_candidate_groups(
         "default_target_scope": "official",
         "success_threshold_source": "eval_context.run_context.success_threshold_m",
         "train_dev_protocol": {
-            "val_train_seen": f"stable hash split with dev_ratio={dev_ratio}",
-            "val_unseen": "test/report only",
+            "policy": protocol_split_policy,
+            "auto": (
+                "train-like splits are train unless the dataset lacks val_train_seen, in which case "
+                "a stable hash split carves out dev; val_train_seen is dev when a train-like split exists; "
+                "val_seen is seen_test; val_unseen is unseen_test"
+            ),
+            "legacy": (
+                "val_train_seen uses stable hash split with dev_ratio; train/train_eval are train; "
+                "val_seen is dev; val_unseen is test"
+            ),
+            "dev_ratio": dev_ratio,
             "salt": dev_salt,
         },
+        "dataset_split_inventory": {dataset: sorted(splits) for dataset, splits in sorted(split_inventory.items())},
         "candidate_feature_columns": CANDIDATE_FEATURE_COLUMNS,
         "candidate_trace_metadata_columns": CANDIDATE_TRACE_METADATA_COLUMNS,
         "label_columns_do_not_use_for_training_or_inference": LABEL_COLUMNS,
@@ -440,6 +487,8 @@ def build_endpoint_candidate_groups(
         "fine_metrics_dir": path_to_string(fine_metrics_dir),
         "output_dir": path_to_string(output_dir),
         "target_scopes": list(target_scopes),
+        "datasets": list(datasets) if datasets else "all",
+        "protocol_split_policy": protocol_split_policy,
         "dev_ratio": dev_ratio,
         "dev_salt": dev_salt,
         "last_k": last_k,
@@ -945,10 +994,52 @@ def protocol_split_for(
     dataset: str,
     split: str,
     internal_item_id: str,
+    dataset_splits: set[str],
+    policy: str,
+    dev_ratio: float,
+    salt: str,
+) -> str:
+    if policy == "legacy":
+        return legacy_protocol_split_for(
+            dataset=dataset,
+            split=split,
+            internal_item_id=internal_item_id,
+            dev_ratio=dev_ratio,
+            salt=salt,
+        )
+
+    has_train_like = bool(dataset_splits.intersection(TRAIN_LIKE_SPLITS))
+    has_val_train_seen = VAL_TRAIN_SEEN_SPLIT in dataset_splits
+
+    if split in TRAIN_LIKE_SPLITS:
+        if not has_val_train_seen and dev_ratio > 0.0:
+            return hashed_train_dev_split(dataset, split, internal_item_id, dev_ratio, salt)
+        return "train"
+    if split == VAL_TRAIN_SEEN_SPLIT:
+        if has_train_like:
+            return "dev"
+        return hashed_train_dev_split(dataset, split, internal_item_id, dev_ratio, salt)
+    if split in SEEN_HELDOUT_SPLITS:
+        return "seen_test" if has_train_like or has_val_train_seen else "dev"
+    if split in UNSEEN_HELDOUT_SPLITS:
+        return "unseen_test"
+    if split in GENERIC_DEV_SPLITS:
+        return "dev"
+    return split
+
+
+def legacy_protocol_split_for(
+    dataset: str,
+    split: str,
+    internal_item_id: str,
     dev_ratio: float,
     salt: str,
 ) -> str:
     if split == "val_train_seen":
+        if dev_ratio <= 0.0:
+            return "train"
+        if dev_ratio >= 1.0:
+            return "dev"
         fraction = stable_fraction(f"{salt}:{dataset}:{internal_item_id}")
         return "dev" if fraction < dev_ratio else "train"
     if split in {"train", "train_eval", "train_seen"}:
@@ -960,10 +1051,39 @@ def protocol_split_for(
     return split
 
 
+def hashed_train_dev_split(
+    dataset: str,
+    split: str,
+    internal_item_id: str,
+    dev_ratio: float,
+    salt: str,
+) -> str:
+    if dev_ratio <= 0.0:
+        return "train"
+    if dev_ratio >= 1.0:
+        return "dev"
+    fraction = stable_fraction(f"{salt}:{dataset}:{split}:{internal_item_id}")
+    return "dev" if fraction < dev_ratio else "train"
+
+
 def stable_fraction(key: str) -> float:
     digest = hashlib.sha1(key.encode("utf-8")).hexdigest()
     value = int(digest[:12], 16)
     return value / float(16**12)
+
+
+def build_split_inventory(sources: list[Any]) -> dict[str, set[str]]:
+    inventory: dict[str, set[str]] = {}
+    for source in sources:
+        inventory.setdefault(source.dataset, set()).add(source.split)
+    return inventory
+
+
+def parse_optional_list(value: str | None) -> tuple[str, ...] | None:
+    if value is None:
+        return None
+    items = tuple(item.strip() for item in value.split(",") if item.strip())
+    return items or None
 
 
 def make_episode_id(dataset: str, split: str, target_scope: str, internal_item_id: str) -> str:
@@ -1050,16 +1170,17 @@ def summary_key(row: dict[str, Any]) -> tuple[str, str, str, str, str]:
     )
 
 
-def summary_sort_key(key: tuple[str, str, str, str, str]) -> tuple[int, str, str, int, str]:
+def summary_sort_key(key: tuple[str, str, str, str, str]) -> tuple[int, str, int, str, int, str]:
     _, dataset, split, protocol_split, target_scope = key
     dataset_order = {"R2R": 0, "REVERIE": 1, "SOON": 2, "CVDN": 3}
-    split_order = {"val_train_seen": 0, "train": 1, "val_seen": 2, "val_unseen": 3}
-    protocol_order = {"train": 0, "dev": 1, "test": 2}
+    split_order = {"train": 0, "train_eval": 1, "train_seen": 2, "val_train_seen": 3, "val_seen": 4, "val_unseen": 5}
+    protocol_order = {"train": 0, "dev": 1, "seen_test": 2, "test": 3, "unseen_test": 4}
     return (
         dataset_order.get(dataset, 99),
-        split,
-        protocol_split,
+        dataset,
         split_order.get(split, 99),
+        split,
+        protocol_order.get(protocol_split, 99),
         f"{protocol_order.get(protocol_split, 99)}:{target_scope}",
     )
 
