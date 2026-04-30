@@ -35,9 +35,11 @@ DEFAULT_PRESET = "phase4_6"
 ABLATION_COLUMNS = [
     "run_name",
     "objective",
+    "feature_set",
     "pair_weights",
     "group_target",
     "group_loss_weight",
+    "group_final_success_bonus",
     "selection_status",
     "selection_error",
     "gate_threshold",
@@ -88,9 +90,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dev-split", default=DEFAULT_DEV_SPLIT)
     parser.add_argument(
         "--preset",
-        choices=("phase4_6", "smoke"),
+        choices=("phase4_6", "phase4_6_final_bias_sanity", "smoke"),
         default=DEFAULT_PRESET,
-        help="Ablation preset. smoke keeps the grid tiny for wiring checks.",
+        help=(
+            "Ablation preset. smoke keeps the grid tiny for wiring checks; "
+            "phase4_6_final_bias_sanity runs the single final-bias decoupling sanity config."
+        ),
     )
     parser.add_argument("--epochs", type=int, default=40)
     parser.add_argument("--batch-size", type=int, default=8192)
@@ -161,7 +166,8 @@ def main() -> None:
         run_dir = output_dir / "runs" / config["run_name"]
         log_progress(
             f"[{index + 1}/{len(configs)}] Training {config['run_name']} "
-            f"objective={config['objective']}, group={config.get('group_target')}",
+            f"objective={config['objective']}, group={config.get('group_target')}, "
+            f"features={config.get('feature_set', 'full')}",
             verbose=verbose,
             start_time=start_time,
         )
@@ -192,6 +198,7 @@ def main() -> None:
             group_fail_reward=config.get("group_fail_reward", -1.0),
             group_late_penalty=config.get("group_late_penalty", 0.25),
             group_final_success_bonus=config.get("group_final_success_bonus", 1.0),
+            feature_set=config.get("feature_set", "full"),
             score_transform=config.get("score_transform", "sigmoid"),
             gate_thresholds=tuple(baseline.parse_float_list(args.gate_thresholds)),
             taus=tuple(baseline.parse_float_list(args.taus)),
@@ -351,9 +358,11 @@ def empty_row(config: dict[str, Any], ranker_manifest: dict[str, Any]) -> dict[s
         {
             "run_name": config["run_name"],
             "objective": config["objective"],
+            "feature_set": config.get("feature_set", "full"),
             "pair_weights": config["pair_weights"],
             "group_target": config.get("group_target"),
             "group_loss_weight": config.get("group_loss_weight"),
+            "group_final_success_bonus": config.get("group_final_success_bonus", 1.0),
             "selection_status": "not_run",
             "selection_error": "",
             "training_pairs": ranker_manifest["counts"]["training_pairs"],
@@ -375,6 +384,20 @@ def build_preset_configs(preset: str) -> list[dict[str, Any]]:
                 "pair_weights": "success_gt_fail=1,better_spl_success_gt_lower_spl_success=2,final_success_final_gt_failed_nonfinal=4",
                 "group_loss_weight": 0.0,
                 "group_target": "soft_reward",
+                "feature_set": "full",
+            }
+        ]
+    if preset == "phase4_6_final_bias_sanity":
+        return [
+            {
+                "run_name": "final_bias_decoupled_pairwise_listwise_best_spl",
+                "objective": "pairwise_listwise",
+                "pair_weights": "success_gt_fail=1,better_spl_success_gt_lower_spl_success=2,final_success_final_gt_failed_nonfinal=0",
+                "group_loss_weight": 1.0,
+                "group_scope": "should_rerank",
+                "group_target": "best_spl_onehot",
+                "group_final_success_bonus": 0.0,
+                "feature_set": "no_final_bias",
             }
         ]
     if preset != "phase4_6":
@@ -386,6 +409,7 @@ def build_preset_configs(preset: str) -> list[dict[str, Any]]:
             "pair_weights": "success_gt_fail=1,better_spl_success_gt_lower_spl_success=1,final_success_final_gt_failed_nonfinal=2",
             "group_loss_weight": 0.0,
             "group_target": "soft_reward",
+            "feature_set": "full",
         },
         {
             "run_name": "pairwise_spl2_final4",
@@ -393,6 +417,7 @@ def build_preset_configs(preset: str) -> list[dict[str, Any]]:
             "pair_weights": "success_gt_fail=1,better_spl_success_gt_lower_spl_success=2,final_success_final_gt_failed_nonfinal=4",
             "group_loss_weight": 0.0,
             "group_target": "soft_reward",
+            "feature_set": "full",
         },
         {
             "run_name": "pairwise_spl4_final8",
@@ -400,6 +425,7 @@ def build_preset_configs(preset: str) -> list[dict[str, Any]]:
             "pair_weights": "success_gt_fail=1,better_spl_success_gt_lower_spl_success=4,final_success_final_gt_failed_nonfinal=8",
             "group_loss_weight": 0.0,
             "group_target": "soft_reward",
+            "feature_set": "full",
         },
         {
             "run_name": "pairwise_listwise_spl2_final4_soft",
@@ -407,6 +433,7 @@ def build_preset_configs(preset: str) -> list[dict[str, Any]]:
             "pair_weights": "success_gt_fail=1,better_spl_success_gt_lower_spl_success=2,final_success_final_gt_failed_nonfinal=4",
             "group_loss_weight": 1.0,
             "group_target": "soft_reward",
+            "feature_set": "full",
         },
         {
             "run_name": "pairwise_listwise_spl2_final4_best_spl",
@@ -414,6 +441,7 @@ def build_preset_configs(preset: str) -> list[dict[str, Any]]:
             "pair_weights": "success_gt_fail=1,better_spl_success_gt_lower_spl_success=2,final_success_final_gt_failed_nonfinal=4",
             "group_loss_weight": 1.0,
             "group_target": "best_spl_onehot",
+            "feature_set": "full",
         },
     ]
 
@@ -493,6 +521,7 @@ def write_report(path: Path, table: pd.DataFrame, args: argparse.Namespace) -> N
             [
                 "run",
                 "status",
+                "features",
                 "gate",
                 "tau",
                 "dSR",
@@ -508,6 +537,7 @@ def write_report(path: Path, table: pd.DataFrame, args: argparse.Namespace) -> N
                 [
                     row.get("run_name"),
                     row.get("selection_status"),
+                    row.get("feature_set"),
                     baseline.fmt(row.get("gate_threshold")),
                     baseline.fmt(row.get("tau")),
                     baseline.pct(row.get("delta_SR")),

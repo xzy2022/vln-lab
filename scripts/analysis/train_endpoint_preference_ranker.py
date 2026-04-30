@@ -53,6 +53,23 @@ DEFAULT_PAIR_WEIGHTS = {
     "final_success_final_gt_failed_nonfinal": 4.0,
 }
 
+FEATURE_SET_CHOICES = ("full", "no_final_bias")
+FINAL_BIAS_FEATURE_COLUMNS = {
+    "is_final",
+    "is_last_k",
+    "step_frac",
+    "candidate_step_frac",
+    "steps_to_final",
+    "steps_to_final_frac",
+    "path_length_ratio_to_final",
+    "path_length_remaining_m",
+    "stop_minus_final_stop",
+    "stop_margin_minus_final_stop",
+    "selected_minus_final_selected",
+    "router_entropy_minus_final_router_entropy",
+    "fuse_weight_minus_final_fuse_weight",
+}
+
 TRAINING_CURVE_COLUMNS = [
     "epoch",
     "pairwise_loss",
@@ -197,6 +214,15 @@ def parse_args() -> argparse.Namespace:
         help="Extra target reward for the final candidate when the original final is successful.",
     )
     parser.add_argument(
+        "--feature-set",
+        choices=FEATURE_SET_CHOICES,
+        default="full",
+        help=(
+            "Feature subset used by the linear ranker. no_final_bias drops explicit final, last-k, "
+            "and final-relative features for the phase-4.6 final-bias sanity ablation."
+        ),
+    )
+    parser.add_argument(
         "--score-transform",
         choices=("sigmoid", "minmax", "raw"),
         default="sigmoid",
@@ -282,6 +308,7 @@ def main() -> None:
         group_fail_reward=args.group_fail_reward,
         group_late_penalty=args.group_late_penalty,
         group_final_success_bonus=args.group_final_success_bonus,
+        feature_set=args.feature_set,
         score_transform=args.score_transform,
         gate_thresholds=tuple(baseline.parse_float_list(args.gate_thresholds)),
         taus=tuple(baseline.parse_float_list(args.taus)),
@@ -321,6 +348,7 @@ def train_endpoint_preference_ranker(
     group_fail_reward: float = -1.0,
     group_late_penalty: float = 0.25,
     group_final_success_bonus: float = 1.0,
+    feature_set: str = "full",
     score_transform: str = "sigmoid",
     gate_thresholds: tuple[float, ...] = DEFAULT_GATE_THRESHOLDS,
     taus: tuple[float, ...] = DEFAULT_TAUS,
@@ -366,6 +394,8 @@ def train_endpoint_preference_ranker(
     log_progress("Building vectorized candidate features", verbose=verbose, start_time=start_time)
     feature_frame = build_ranker_feature_frame_fast(candidates)
     baseline.validate_features(feature_frame)
+    feature_columns = resolve_feature_columns(feature_set)
+    validate_feature_subset(feature_frame, feature_columns)
     feature_frame["row_index"] = np.arange(len(feature_frame), dtype=int)
 
     train_mask = feature_frame["protocol_split"] == train_split
@@ -384,9 +414,9 @@ def train_endpoint_preference_ranker(
     log_progress("Imputing and scaling features", verbose=verbose, start_time=start_time)
     imputer = SimpleImputer(strategy="median")
     scaler = StandardScaler()
-    x_train = imputer.fit_transform(feature_frame.loc[train_mask, baseline.FEATURE_COLUMNS])
+    x_train = imputer.fit_transform(feature_frame.loc[train_mask, feature_columns])
     scaler.fit(x_train)
-    x_all = scaler.transform(imputer.transform(feature_frame[baseline.FEATURE_COLUMNS]))
+    x_all = scaler.transform(imputer.transform(feature_frame[feature_columns]))
 
     rng = np.random.default_rng(random_state)
     log_progress(
@@ -473,7 +503,7 @@ def train_endpoint_preference_ranker(
         split_filters=summary_splits_tuple,
         target_scope=target_scope,
     )
-    importance_rows = build_importance_rows(coef)
+    importance_rows = build_importance_rows(coef, feature_columns)
 
     features_csv = output_dir / "preference_ranker_features.csv"
     scores_csv = output_dir / "preference_ranker_scores.csv"
@@ -521,6 +551,8 @@ def train_endpoint_preference_ranker(
         group_fail_reward=group_fail_reward,
         group_late_penalty=group_late_penalty,
         group_final_success_bonus=group_final_success_bonus,
+        feature_set=feature_set,
+        feature_columns=feature_columns,
         score_transform=score_transform,
     )
     joblib.dump(
@@ -530,7 +562,7 @@ def train_endpoint_preference_ranker(
             "intercept": intercept,
             "imputer": imputer,
             "scaler": scaler,
-            "feature_columns": baseline.FEATURE_COLUMNS,
+            "feature_columns": feature_columns,
             "model_payload": model_payload,
         },
         model_joblib,
@@ -569,6 +601,11 @@ def train_endpoint_preference_ranker(
         "dev_split": dev_split,
         "eval_split_filters": list(eval_split_filters),
         "objective": objective,
+        "feature_set": feature_set,
+        "feature_columns": feature_columns,
+        "excluded_feature_columns": [
+            column for column in baseline.FEATURE_COLUMNS if column not in set(feature_columns)
+        ],
         "pair_weights": resolved_pair_weights,
         "max_pairs_per_type": max_pairs_per_type,
         "training": {
@@ -601,7 +638,7 @@ def train_endpoint_preference_ranker(
             "candidates": int(len(feature_frame)),
             "training_pairs": int(len(pair_arrays.chosen_idx)),
             "group_targets": int(len(group_targets)),
-            "features": len(baseline.FEATURE_COLUMNS),
+            "features": len(feature_columns),
         },
         "files": {
             "candidate_csv": baseline.path_to_string(candidate_csv),
@@ -1160,14 +1197,40 @@ def adam_step(
     return coef, intercept
 
 
-def build_importance_rows(coef: np.ndarray) -> list[dict[str, Any]]:
+def resolve_feature_columns(feature_set: str) -> list[str]:
+    if feature_set == "full":
+        return list(baseline.FEATURE_COLUMNS)
+    if feature_set == "no_final_bias":
+        return [
+            column
+            for column in baseline.FEATURE_COLUMNS
+            if column not in FINAL_BIAS_FEATURE_COLUMNS
+        ]
+    raise ValueError(f"Unsupported feature_set={feature_set!r}")
+
+
+def validate_feature_subset(feature_frame: pd.DataFrame, feature_columns: list[str]) -> None:
+    if not feature_columns:
+        raise ValueError("Feature subset must not be empty")
+    unknown = sorted(set(feature_columns).difference(baseline.FEATURE_COLUMNS))
+    if unknown:
+        raise ValueError(f"Unknown feature columns requested: {unknown}")
+    forbidden = sorted(set(feature_columns).intersection(baseline.FORBIDDEN_FEATURE_COLUMNS))
+    if forbidden:
+        raise ValueError(f"Forbidden columns included as features: {forbidden}")
+    missing = [column for column in feature_columns if column not in feature_frame.columns]
+    if missing:
+        raise ValueError(f"Missing feature columns: {missing}")
+
+
+def build_importance_rows(coef: np.ndarray, feature_columns: list[str]) -> list[dict[str, Any]]:
     rows = [
         {
             "feature": feature,
             "coefficient": float(value),
             "abs_coefficient": float(abs(value)),
         }
-        for feature, value in zip(baseline.FEATURE_COLUMNS, coef)
+        for feature, value in zip(feature_columns, coef)
     ]
     return sorted(rows, key=lambda row: row["abs_coefficient"], reverse=True)
 
@@ -1197,6 +1260,8 @@ def build_model_payload(
     group_fail_reward: float,
     group_late_penalty: float,
     group_final_success_bonus: float,
+    feature_set: str,
+    feature_columns: list[str],
     score_transform: str,
 ) -> dict[str, Any]:
     return {
@@ -1204,7 +1269,11 @@ def build_model_payload(
         "target_scope": target_scope,
         "train_split": train_split,
         "dev_split": dev_split,
-        "feature_columns": baseline.FEATURE_COLUMNS,
+        "feature_set": feature_set,
+        "feature_columns": feature_columns,
+        "excluded_feature_columns": [
+            column for column in baseline.FEATURE_COLUMNS if column not in set(feature_columns)
+        ],
         "model": {
             "type": "linear_preference_ranker",
             "objective": objective,
@@ -1269,6 +1338,8 @@ def write_report(
         f"- train_split: `{manifest['train_split']}`",
         f"- dev_split: `{manifest['dev_split']}`",
         f"- objective: `{manifest['objective']}`",
+        f"- feature_set: `{manifest['feature_set']}`",
+        f"- feature_count: `{manifest['counts']['features']}`",
         f"- pair_weights: `{format_pair_weights(manifest['pair_weights'])}`",
         f"- group_loss_weight: `{manifest['training']['group_loss_weight']}`",
         f"- group_scope: `{manifest['training']['group_scope']}`",
