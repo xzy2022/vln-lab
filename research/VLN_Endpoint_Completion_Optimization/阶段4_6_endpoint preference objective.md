@@ -1,6 +1,6 @@
 # 阶段4.6 endpoint preference objective 修正
 
-状态：main ablation 已完成，dev 未过 continue line，已审核
+状态：main ablation 已完成；final-bias sanity 已完成并过 dev continue line，已审核
 
 本阶段目标是根据 4.5 诊断结论修正 ranker objective：
 
@@ -15,8 +15,10 @@
 ```text
 phase4_6 主 ablation 已完成；
 SPL-aware pairwise / group-listwise 能改善 success-success preference，
-但未转化成足够的 endpoint recovery，所有配置均未通过 continue line。
-当前不进入 4.7，不运行 frozen val_unseen，不继续跑 actionable gate 主线。
+但未转化成足够的 endpoint recovery，所有主配置均未通过 continue line。
+final-bias 解耦 sanity 验证了职责解耦假设，并产出两个 frozen 候选。
+当前不继续跑 actionable gate 主线；下一步可进入 4.7 frozen val_unseen，
+但只允许使用已冻结候选，不在 val_unseen 上反向调参。
 ```
 
 ## 1. 新增实现入口
@@ -324,39 +326,141 @@ ranker 应负责在允许修改后选择更好的非 final endpoint。
 当前 preference ranker 仍把 final-preserving safety 混入 endpoint selection。
 ```
 
-### 4.3 下一步计划
+### 4.3 final-bias 解耦 sanity 实现
 
-当前不继续执行 actionable gate 主线，也不进入 4.7 / val_unseen。
-
-如果仍停留在 4.6，只允许一个最小 sanity ablation：
+已新增一个单配置 preset，不扩展 grid：
 
 ```text
-final-bias 解耦 ranker
+phase4_6_final_bias_sanity
 ```
 
-目标不是扩大 grid，而是验证一个诊断假设：
+该 preset 只跑：
 
-```text
-去掉或显著降低 ranker 侧的 final-preserving / final-like 偏置后，
-should_rerank dev top1 success 是否能从 5.64% 回到接近 CE baseline 的区间。
+| 字段 | 设置 |
+| --- | --- |
+| run | `final_bias_decoupled_pairwise_listwise_best_spl` |
+| objective | `pairwise_listwise` |
+| pair weights | `success_gt_fail=1,better_spl_success_gt_lower_spl_success=2,final_success_final_gt_failed_nonfinal=0` |
+| group target | `best_spl_onehot` |
+| group scope | `should_rerank` |
+| group final bonus | `0` |
+| feature set | `no_final_bias` |
+
+新增 ranker 参数：
+
+```bash
+--feature-set no_final_bias
 ```
 
-建议只观察诊断指标，不把它直接作为 4.7 候选：
+它会从 ranker 输入中移除显式 final / last-k / final-relative 特征：
 
 ```text
-should_rerank top1 success
-top1_is_final_rate
-better_spl_success_gt_lower_spl_success accuracy
-weighted dev delta_SR / harm
+is_final
+is_last_k
+step_frac
+candidate_step_frac
+steps_to_final
+steps_to_final_frac
+path_length_ratio_to_final
+path_length_remaining_m
+stop_minus_final_stop
+stop_margin_minus_final_stop
+selected_minus_final_selected
+router_entropy_minus_final_router_entropy
+fuse_weight_minus_final_fuse_weight
 ```
 
-若该 sanity ablation 仍不能恢复 top1 endpoint selection，则阶段 4 的结论应收束为：
+默认 `--feature-set full` 保持原 4.6 主 ablation 行为不变。
+
+正式运行命令：
+
+```bash
+EXP=experiment_outputs/0017_same_val_train_eval_all_r2r_reverie_cvdn_soon_same_s0_trace4ds_train_eval_v1
+
+python scripts/analysis/run_endpoint_preference_ablation.py \
+  --experiment-dir "$EXP" \
+  --preset phase4_6_final_bias_sanity \
+  --output-dir "$EXP/endpoint_learning/preference_ablation/final_bias_sanity"
+```
+
+运行后再单独做 top1 诊断：
+
+```bash
+EXP=experiment_outputs/0017_same_val_train_eval_all_r2r_reverie_cvdn_soon_same_s0_trace4ds_train_eval_v1
+RUN=final_bias_decoupled_pairwise_listwise_best_spl
+
+python scripts/analysis/diagnose_endpoint_ranker_top1.py \
+  --experiment-dir "$EXP" \
+  --score-csv "$EXP/endpoint_learning/preference_ablation/final_bias_sanity/runs/$RUN/preference_ranker_scores.csv" \
+  --splits dev \
+  --output-dir "$EXP/endpoint_ranker_diagnostics/0017_phase4_6_final_bias_sanity_dev"
+```
+
+### 4.4 final-bias 解耦 sanity 结果
+
+`phase4_6_final_bias_sanity` 已完成。结果不是扩大 grid 得到的，而是只验证一个诊断假设：
 
 ```text
-endpoint upper bound 明确存在；
-但仅靠当前 SAME trace feature 的离线 gate + ranker，
-无法稳定吃掉该 upper bound。
-后续应换问题定义或引入新信号，而不是继续在 4.6 内扫 objective。
+去掉 ranker 侧 final-preserving pair 和 final-like 特征后，
+endpoint selection 能否恢复。
+```
+
+dev weighted 结果：
+
+| run | dSR | dSPL | recovery | harm | max harm | CVDN dSR | better SPL acc | continue |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `final_bias_decoupled_pairwise_listwise_best_spl` | +0.38pp | +0.79pp | 0.90pp | 0.53pp | 0.95pp | +0.95pp | 74.77% | true |
+
+top1 诊断：
+
+| 指标 | 数值 |
+| --- | ---: |
+| `should_rerank` top1 success | 477 / 976 = 48.87% |
+| best-SPL success top1 | 32.38% |
+| best-SPL success top3 | 66.91% |
+| `should_rerank` top1 is final | 9.43% |
+
+对比基线：
+
+```text
+CE baseline should_rerank top1 success:       209 / 976 = 21.41%
+best 4.6 main preference ranker top1 success:  55 / 976 = 5.64%
+final-bias sanity top1 success:               477 / 976 = 48.87%
+```
+
+结论：
+
+```text
+final-bias 解耦假设成立。
+之前 4.6 main objective 的失败主要不是 SPL preference 无效，
+而是 ranker 侧混入了 gate 应负责的 final-preserving safety。
+解耦后，ranker top1 endpoint selection 明显恢复；
+剩余瓶颈转移到 gate：976 个 should_rerank episode 中 791 个被 gate 拒绝。
+```
+
+### 4.5 已保存 frozen 候选
+
+两个候选均已保存到：
+
+```text
+experiment_outputs/0017_same_val_train_eval_all_r2r_reverie_cvdn_soon_same_s0_trace4ds_train_eval_v1/endpoint_learning/preference_ablation/final_bias_sanity/frozen_candidates.json
+```
+
+| 候选 | 用途 | gate | tau | allow change final | dSR | dSPL | recovery | harm | max harm | CVDN dSR | 备注 |
+| --- | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `dev_best` | dev 最优收益记录 | 0.90 | 0.01 | true | +0.38pp | +0.79pp | 0.90pp | 0.53pp | 0.95pp | +0.95pp | CVDN harm 贴近 1pp 上限 |
+| `safety` | 推荐优先跑 val_unseen | 0.95 | 0.03 | true | +0.23pp | +0.34pp | 0.31pp | 0.07pp | 0.11pp | +0.32pp | 收益较小但安全余量大 |
+
+### 4.6 下一步计划
+
+下一步进入 4.7，但边界要收紧：
+
+```text
+1. 不再继续扫 4.6 objective。
+2. 不继续 actionable gate 主线。
+3. 先用 safety 候选跑 frozen val_unseen。
+4. dev_best 只作为收益上界 / 敏感性候选；是否跑取决于 safety 的 val_unseen harm。
+5. val_unseen 只报告，不反向调参。
 ```
 
 ## 5. 运行环境
@@ -377,6 +481,9 @@ python -m py_compile
 --help smoke
 full 0017 CSV 上的 one-config smoke ablation
 full 0017 CSV 上的 phase4_6 main ablation
+final-bias sanity 的 1 epoch / small-pair 训练 smoke
+full 0017 CSV 上的 final-bias sanity ablation
+final-bias sanity dev top1 diagnostics
 ```
 
-smoke 仅验证训练、score 导出、evaluator bridge、frozen selection 和 ablation table 链路，不作为实验结果。`phase4_6 main ablation` 是本阶段当前决策依据。
+smoke 仅验证对应代码链路，不作为实验结果；其中 final-bias sanity smoke 只验证训练、score 导出和模型元数据。`phase4_6 main ablation` 和 `phase4_6_final_bias_sanity` 共同构成本阶段当前决策依据。
