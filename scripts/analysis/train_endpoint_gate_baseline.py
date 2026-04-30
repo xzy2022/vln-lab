@@ -244,6 +244,19 @@ def parse_args() -> argparse.Namespace:
         help="Output directory. Defaults to <endpoint-learning-dir>/gate_baseline.",
     )
     parser.add_argument(
+        "--label-csv",
+        default=None,
+        help=(
+            "Optional episode-level label CSV. When provided, --label-column replaces "
+            "should_rerank for gate training/diagnostics on covered episodes."
+        ),
+    )
+    parser.add_argument(
+        "--label-column",
+        default="should_rerank",
+        help="Label column to read from --label-csv. Defaults to should_rerank.",
+    )
+    parser.add_argument(
         "--target-scope",
         default=DEFAULT_TARGET_SCOPE,
         help="Target scope to train. Defaults to official.",
@@ -340,6 +353,8 @@ def main() -> None:
         episode_csv=episode_csv,
         candidate_csv=candidate_csv,
         output_dir=output_dir,
+        label_csv=Path(args.label_csv).resolve() if args.label_csv else None,
+        label_column=args.label_column,
         target_scope=args.target_scope,
         train_split=args.train_split,
         dev_split=args.dev_split,
@@ -361,6 +376,8 @@ def train_endpoint_gate_baseline(
     episode_csv: Path,
     candidate_csv: Path,
     output_dir: Path,
+    label_csv: Path | None = None,
+    label_column: str = "should_rerank",
     target_scope: str = DEFAULT_TARGET_SCOPE,
     train_split: str = DEFAULT_TRAIN_SPLIT,
     dev_split: str = DEFAULT_DEV_SPLIT,
@@ -388,6 +405,12 @@ def train_endpoint_gate_baseline(
 
     feature_frame = build_gate_feature_frame(episodes, candidates)
     validate_features(feature_frame)
+    label_override_meta = apply_label_override(
+        feature_frame=feature_frame,
+        label_csv=label_csv,
+        label_column=label_column,
+        target_scope=target_scope,
+    )
 
     train_mask = feature_frame["protocol_split"] == train_split
     dev_mask = feature_frame["protocol_split"] == dev_split
@@ -501,6 +524,9 @@ def train_endpoint_gate_baseline(
         "include_test_summary": include_test_summary,
         "candidate_score_column": candidate_score_column,
         "missing_candidate_score": missing_candidate_score,
+        "label_csv": path_to_string(label_csv) if label_csv is not None else None,
+        "label_column": label_column,
+        "label_override": label_override_meta,
         "model": {
             "type": "sklearn.pipeline.Pipeline",
             "classifier": "LogisticRegression",
@@ -519,6 +545,7 @@ def train_endpoint_gate_baseline(
         "files": {
             "episode_csv": path_to_string(episode_csv),
             "candidate_csv": path_to_string(candidate_csv),
+            "label_csv": path_to_string(label_csv) if label_csv is not None else None,
             "gate_features_csv": path_to_string(gate_features_csv),
             "gate_episode_scores_csv": path_to_string(episode_scores_csv),
             "gate_scores_csv": path_to_string(gate_scores_csv),
@@ -541,6 +568,46 @@ def train_endpoint_gate_baseline(
         eval_manifest=eval_manifest,
     )
     return manifest
+
+
+def apply_label_override(
+    feature_frame: pd.DataFrame,
+    label_csv: Path | None,
+    label_column: str,
+    target_scope: str,
+) -> dict[str, Any]:
+    if label_csv is None:
+        return {
+            "enabled": False,
+            "label_column": label_column,
+            "covered_episodes": 0,
+            "positive_rate": math.nan,
+        }
+    if not label_csv.exists():
+        raise FileNotFoundError(label_csv)
+    labels = pd.read_csv(label_csv, low_memory=False)
+    if "episode_id" not in labels.columns:
+        raise ValueError(f"Label CSV must contain episode_id: {label_csv}")
+    if label_column not in labels.columns:
+        raise ValueError(f"Label CSV missing label column {label_column!r}: {label_csv}")
+    if "target_scope" in labels.columns:
+        labels = labels[labels["target_scope"] == target_scope].copy()
+    labels = labels.drop_duplicates(subset=["episode_id"], keep="last")
+    label_series = to_bool_series(labels[label_column]).astype(int)
+    label_map = dict(zip(labels["episode_id"].astype(str), label_series))
+    override = feature_frame["episode_id"].astype(str).map(label_map)
+    covered = override.notna()
+    if not covered.any():
+        raise ValueError(f"No gate feature rows were covered by label CSV {label_csv}")
+    feature_frame.loc[covered, "should_rerank"] = override[covered].astype(int)
+    values = feature_frame.loc[covered, "should_rerank"].astype(int)
+    return {
+        "enabled": True,
+        "label_column": label_column,
+        "covered_episodes": int(covered.sum()),
+        "positive_episodes": int(values.sum()),
+        "positive_rate": safe_divide(int(values.sum()), int(covered.sum())),
+    }
 
 
 def build_gate_feature_frame(episodes: pd.DataFrame, candidates: pd.DataFrame) -> pd.DataFrame:
@@ -894,6 +961,8 @@ def write_report(
         f"- dev_split: `{manifest['dev_split']}`",
         f"- model: class-balanced sklearn LogisticRegression",
         f"- candidate_score in exported score CSV: `{manifest['candidate_score_column']}`",
+        f"- label_column: `{manifest['label_column']}`",
+        f"- label_csv: `{manifest['label_csv']}`",
         f"- recommended_threshold: `{manifest['recommended_threshold']}`",
         f"- include_test_summary: `{manifest['include_test_summary']}`",
         "",
