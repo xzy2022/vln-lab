@@ -19,7 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_VERSION = "endpoint_ranker_top1_diagnostics.v1"
 DEFAULT_ENDPOINT_LEARNING_DIR = "endpoint_learning"
 DEFAULT_OUTPUT_NAME = "ranker_diagnostics"
-DEFAULT_REPORTS_SUBDIR = Path("reports") / "endpoint_ranker_diagnostics"
+DEFAULT_OUTPUT_SUBDIR = Path("endpoint_ranker_diagnostics")
 DEFAULT_TARGET_SCOPE = "official"
 DEFAULT_SPLITS = ("dev",)
 EPS = 1e-12
@@ -145,8 +145,9 @@ def parse_args() -> argparse.Namespace:
         "--output-dir",
         default=None,
         help=(
-            "Output directory. Defaults to <experiment-dir>/reports/endpoint_ranker_diagnostics "
-            "when --experiment-dir is provided."
+            "Output directory. Defaults to <experiment-dir>/endpoint_ranker_diagnostics "
+            "when --experiment-dir is provided. Relative paths are resolved under "
+            "<experiment-dir>."
         ),
     )
     parser.add_argument(
@@ -186,9 +187,10 @@ def main() -> None:
         args.failure_slice_summary_csv,
         endpoint_learning_dir / "frozen_gate_ranker" / "failure_slice_summary.csv",
     )
-    output_dir = resolve_path(
+    output_dir = resolve_output_dir(
         args.output_dir,
-        default_output_dir(experiment_dir, endpoint_learning_dir),
+        experiment_dir,
+        endpoint_learning_dir,
     )
     splits = parse_string_list(args.splits)
 
@@ -1245,14 +1247,45 @@ def resolve_endpoint_learning_dir(experiment_dir: Path | None, endpoint_learning
 
 def default_output_dir(experiment_dir: Path | None, endpoint_learning_dir: Path) -> Path:
     if experiment_dir is not None:
-        return (experiment_dir / DEFAULT_REPORTS_SUBDIR).resolve()
+        return (experiment_dir / DEFAULT_OUTPUT_SUBDIR).resolve()
     if endpoint_learning_dir.name == DEFAULT_ENDPOINT_LEARNING_DIR:
-        return (endpoint_learning_dir.parent / DEFAULT_REPORTS_SUBDIR).resolve()
+        return (endpoint_learning_dir.parent / DEFAULT_OUTPUT_SUBDIR).resolve()
     return (endpoint_learning_dir / DEFAULT_OUTPUT_NAME).resolve()
+
+
+def resolve_output_dir(
+    raw: str | None,
+    experiment_dir: Path | None,
+    endpoint_learning_dir: Path,
+) -> Path:
+    default = default_output_dir(experiment_dir, endpoint_learning_dir)
+    if raw is None:
+        return default
+
+    output_dir = Path(raw)
+    if output_dir.is_absolute():
+        return output_dir.resolve()
+
+    repo_relative_output_dir = (REPO_ROOT / output_dir).resolve()
+    if experiment_dir is not None and path_is_relative_to(repo_relative_output_dir, experiment_dir):
+        return repo_relative_output_dir
+    if experiment_dir is not None:
+        return (experiment_dir / output_dir).resolve()
+    if endpoint_learning_dir.name == DEFAULT_ENDPOINT_LEARNING_DIR:
+        return (endpoint_learning_dir.parent / output_dir).resolve()
+    return output_dir.resolve()
 
 
 def resolve_path(raw: str | None, default: Path) -> Path:
     return Path(raw).resolve() if raw else default.resolve()
+
+
+def path_is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
 
 
 def resolve_optional_path(raw: str | None, default: Path) -> Path | None:

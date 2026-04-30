@@ -29,13 +29,13 @@ scripts/analysis/diagnose_endpoint_ranker_top1.py
 conda run -n plots python scripts/analysis/diagnose_endpoint_ranker_top1.py \
   --experiment-dir experiment_outputs/0017_same_val_train_eval_all_r2r_reverie_cvdn_soon_same_s0_trace4ds_train_eval_v1 \
   --splits dev \
-  --output-dir reports/endpoint_ranker_diagnostics/0017_phase4_5_dev
+  --output-dir endpoint_ranker_diagnostics/0017_phase4_5_dev
 ```
 
-由于 `experiment_outputs/0017...` 目录归属 `root:root`，当前用户不可写，诊断产物写入：
+诊断产物写入：
 
 ```text
-reports/endpoint_ranker_diagnostics/0017_phase4_5_dev
+experiment_outputs/0017_same_val_train_eval_all_r2r_reverie_cvdn_soon_same_s0_trace4ds_train_eval_v1/endpoint_ranker_diagnostics/0017_phase4_5_dev
 ```
 
 主要输出：
