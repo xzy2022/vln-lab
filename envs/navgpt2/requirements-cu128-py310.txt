@@ -1,0 +1,44 @@
+# Install torch and torchvision manually first:
+# pip install torch==2.7.0+cu128 torchvision==0.22.0+cu128 \
+#   -f https://mirrors.aliyun.com/pytorch-wheels/cu128/
+
+# DUET dependencies
+numpy==1.23.5
+jsonlines==2.0.0
+easydict==1.9
+Shapely>=1.8.5,<2.0
+h5py>=3.10,<4
+networkx>=2.8,<3
+lmdb
+msgpack
+tensorboardX
+
+# Local LAVIS dependencies
+contexttimer
+decord
+einops>=0.4.1
+fairscale==0.4.13
+ftfy
+iopath
+ipython
+omegaconf
+opencv-python-headless==4.8.1.78
+opendatasets
+packaging
+pandas
+plotly
+pre-commit
+pycocoevalcap
+pycocotools
+python-magic
+scikit-image
+sentencepiece
+spacy
+streamlit
+timm==0.4.12
+tqdm
+transformers==4.28.1
+webdataset
+wheel
+huggingface_hub
+gdown

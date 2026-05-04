@@ -10,3 +10,6 @@
 [submodule "third_party/Matterport3DSimulator"]
 	path = third_party/Matterport3DSimulator
 	url = https://github.com/peteanderson80/Matterport3DSimulator.git
+[submodule "third_party/NavGPT-2"]
+	path = third_party/NavGPT-2
+	url = https://github.com/GengzeZhou/NavGPT-2.git
