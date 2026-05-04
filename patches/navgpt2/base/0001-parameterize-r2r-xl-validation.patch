@@ -1,0 +1,76 @@
+diff --git a/map_nav_src/scripts/val_r2r_xl.sh b/map_nav_src/scripts/val_r2r_xl.sh
+index 0c5be0c..3ea2be1 100644
+--- a/map_nav_src/scripts/val_r2r_xl.sh
++++ b/map_nav_src/scripts/val_r2r_xl.sh
+@@ -1,19 +1,51 @@
+-DATA_ROOT=../datasets
++#!/usr/bin/env bash
++set -euo pipefail
++
++SCRIPT_DIR=$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)
++MAP_NAV_SRC=$(cd -- "${SCRIPT_DIR}/.." && pwd)
++cd "${MAP_NAV_SRC}"
++
++NAVGPT2_ASSET_ROOT="${NAVGPT2_ASSET_ROOT:-/workspace/vln-lab/data/navgpt2}"
++DATA_ROOT="${DATA_ROOT:-${NAVGPT2_DATASETS:-${NAVGPT2_ASSET_ROOT}/datasets}}"
++OUTPUT_ROOT="${OUTPUT_ROOT:-${NAVGPT2_OUTPUT_ROOT:-${NAVGPT2_ASSET_ROOT}/outputs}}"
++QFORMER_CKPT="${QFORMER_CKPT:-${NAVGPT2_QFORMER_DIR:-${NAVGPT2_ASSET_ROOT}/map_nav_src/models/lavis/output}/NavGPT-InstructBLIP-FlanT5XL.pth}"
++RESUME_FILE="${RESUME_FILE:-${DATA_ROOT}/R2R/trained_models/best_val_unseen_xl}"
++CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
++PYTHON_BIN="${PYTHON_BIN:-python}"
++EXTRA_ARGS="${EXTRA_ARGS:-}"
+ 
+ train_alg=dagger
+ 
+ features=eva-clip-g
+ ft_dim=1408
+ 
+-ngpus=1
+-seed=0
+-batch_size=2
++ngpus="${NGPUS:-1}"
++seed="${SEED:-0}"
++batch_size="${BATCH_SIZE:-2}"
+ 
+ name=NavGPT2-XL
+ name=${name}-seed.${seed}
+ name=${name}-bs${batch_size}
+ 
+-outdir=${DATA_ROOT}/R2R/exprs_map/finetune/${name}
++outdir="${OUTPUT_DIR:-${OUTPUT_ROOT}/R2R/exprs_map/finetune/${name}}"
++
++for required_path in \
++  "${DATA_ROOT}/R2R/annotations/R2R_val_unseen_enc.json" \
++  "${DATA_ROOT}/R2R/annotations/scanvp_candidates.json" \
++  "${DATA_ROOT}/R2R/connectivity/scans.txt" \
++  "${DATA_ROOT}/R2R/features/MP3D_eva_clip_g_can.lmdb/data.mdb" \
++  "${RESUME_FILE}" \
++  "${QFORMER_CKPT}"; do
++  if [[ ! -e "${required_path}" ]]; then
++    echo "ERROR: required path not found: ${required_path}" >&2
++    exit 1
++  fi
++done
++
++echo "DATA_ROOT=${DATA_ROOT}"
++echo "OUTPUT_DIR=${outdir}"
++echo "QFORMER_CKPT=${QFORMER_CKPT}"
++echo "RESUME_FILE=${RESUME_FILE}"
+ 
+ flag="--root_dir ${DATA_ROOT}
+       --dataset r2r
+@@ -52,8 +84,9 @@ flag="--root_dir ${DATA_ROOT}
+       --gamma 0."
+ 
+ # validation
+-CUDA_VISIBLE_DEVICES='0' python r2r/main_nav.py $flag  \
++CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" "${PYTHON_BIN}" r2r/main_nav.py $flag  \
+         --freeze_qformer \
+-        --qformer_ckpt_path models/lavis/output/NavGPT-InstructBLIP-FlanT5XL.pth \
+-        --resume_file ../datasets/R2R/trained_models/best_val_unseen_xl \
+-        --test
+\ No newline at end of file
++        --qformer_ckpt_path "${QFORMER_CKPT}" \
++        --resume_file "${RESUME_FILE}" \
++        --test \
++        ${EXTRA_ARGS}
