@@ -86,10 +86,10 @@
   - 确认 SAME 输出中 trajectory/action sequence 的可解析性
   - **停止条件**：若 SAME 完全不支持 NavNuances 格式，路线 A 需重新评估
 
-- [ ] A.2：确认 NavGPT 在 NavNuances 上的评估接口
+- [ ] A.2：确认 NavGPT-2 在 NavNuances 上的评估接口
   - 检查是否有现成的 NavGPT eval 脚本或已运行的结果
-  - 若无，检查 NavGPT 的输入格式与 NavNuances 的兼容性
-  - **停止条件**：若 NavGPT 无法适配 NavNuances，改用 SAME-only Atlas（仅分析 SAME 的 skill 分布）
+  - 若无，检查 NavGPT-2 的输入格式与 NavNuances 的兼容性
+  - **停止条件**：若 NavGPT-2 无法适配 NavNuances，改用 SAME-only Atlas（仅分析 SAME 的 skill 分布）
 
 - [ ] A.3：建立诊断脚本框架
   - 在 `scripts/analysis/` 下创建 `ability_atlas/` 目录
