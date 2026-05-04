@@ -9,6 +9,8 @@ reports/artifacts
 experiment_outputs/
 tmp/
 Notes/
+references/papers
+writing/test/
 
 # Env
 .env
