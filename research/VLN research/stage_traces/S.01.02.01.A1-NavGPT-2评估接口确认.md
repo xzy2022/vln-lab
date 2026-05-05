@@ -16,7 +16,7 @@
 本 stage 只确认 NavGPT-2 评估接口和当前推理结果，不完成 NavGPT-2 在 NavNuances 五类 skill 上的正式评估，也不生成 SAME vs NavGPT-2 的 skill-level 互补矩阵。
 
 ## 背景与输入
-
+third_party/NavGPT-2
 ### 上游行动计划
 
 | 来源 | 对本 stage 的要求 |
