@@ -1,0 +1,64 @@
+diff --git a/map_nav_src/r2r/main_nav.py b/map_nav_src/r2r/main_nav.py
+index c184f3d..5871023 100644
+--- a/map_nav_src/r2r/main_nav.py
++++ b/map_nav_src/r2r/main_nav.py
+@@ -20,6 +20,18 @@ from r2r.parser import parse_args
+ from r2r.agent import GMapNavAgent
+ 
+ 
++def parse_eval_splits(eval_splits):
++    if eval_splits is None:
++        return None
++    splits = []
++    for raw_split in eval_splits:
++        for split in raw_split.split(','):
++            split = split.strip()
++            if split:
++                splits.append(split)
++    return splits
++
++
+ def build_dataset(args, rank=0, is_test=False):
+ 
+     feat_db = ImageFeaturesDB(args.img_ft_file, args.image_feat_size)
+@@ -60,14 +72,16 @@ def build_dataset(args, rank=0, is_test=False):
+     else:
+         train_env = None
+ 
+-    val_env_names = ['val_train_seen', 'val_seen', 'val_unseen']
++    val_env_names = parse_eval_splits(args.eval_splits)
++    if val_env_names is None:
++        val_env_names = ['val_train_seen', 'val_seen', 'val_unseen']
+ 
+-    if args.dataset == 'r4r' and (not args.test):
+-        val_env_names[-1] == 'val_unseen_sampled'
+-    
+-    if args.submit and args.dataset != 'r4r':
+-        val_env_names.append('test')
+-        
++        if args.dataset == 'r4r' and (not args.test):
++            val_env_names[-1] == 'val_unseen_sampled'
++
++        if args.submit and args.dataset != 'r4r':
++            val_env_names.append('test')
++
+     val_envs = {}
+     for split in val_env_names:
+         val_instr_data = construct_instrs(
+diff --git a/map_nav_src/r2r/parser.py b/map_nav_src/r2r/parser.py
+index 9d9915c..c595e47 100644
+--- a/map_nav_src/r2r/parser.py
++++ b/map_nav_src/r2r/parser.py
+@@ -106,6 +106,12 @@ def parse_args():
+     parser.add_argument("--submit", action='store_true', default=False)
+     parser.add_argument('--no_backtrack', action='store_true', default=False)
+     parser.add_argument('--detailed_output', action='store_true', default=False)
++    parser.add_argument(
++        '--eval_splits',
++        nargs='+',
++        default=None,
++        help='Validation splits to evaluate. Supports space or comma separated values.'
++    )
+ 
+     # Training Configurations
+     parser.add_argument(
