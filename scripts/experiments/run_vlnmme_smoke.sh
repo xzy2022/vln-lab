@@ -50,12 +50,18 @@ DATA_DIR="$(read_config_value "experiment.data_dir")"
 R2R_SPLITS="$(read_config_value "task.eval_splits.R2R")"
 
 if grep -qx "val_unseen_subset_smoke" <<< "${R2R_SPLITS}"; then
-  SMOKE_SOURCE_DATA="${SMOKE_SOURCE_DATA:-${REPO_DIR}/data/vlnmme/R2R/val_unseen_subset_enc.json}"
-  if [[ ! -f "${SMOKE_SOURCE_DATA}" ]]; then
-    SMOKE_SOURCE_DATA="${REPO_DIR}/third_party/VLN-MME/data/R2R/val_unseen_subset_enc.json"
+  if [[ -z "${SMOKE_SOURCE_DATA:-}" ]]; then
+    for candidate in \
+      "${REPO_DIR}/data/vlnmme/R2R/val_unseen_subset_enc.json" \
+      "${REPO_DIR}/third_party/VLN-MME/data/R2R/val_unseen_subset_enc.json"; do
+      if [[ -f "${candidate}" ]]; then
+        SMOKE_SOURCE_DATA="${candidate}"
+        break
+      fi
+    done
   fi
-  if [[ ! -f "${SMOKE_SOURCE_DATA}" ]]; then
-    echo "Missing source data for tiny smoke split: ${SMOKE_SOURCE_DATA}" >&2
+  if [[ -z "${SMOKE_SOURCE_DATA:-}" || ! -f "${SMOKE_SOURCE_DATA}" ]]; then
+    echo "Missing source data for tiny smoke split: ${SMOKE_SOURCE_DATA:-<searched default candidates>}" >&2
     exit 1
   fi
 
