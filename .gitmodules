@@ -13,3 +13,6 @@
 [submodule "third_party/NavGPT-2"]
 	path = third_party/NavGPT-2
 	url = https://github.com/GengzeZhou/NavGPT-2.git
+[submodule "third_party/VLN-MME"]
+	path = third_party/VLN-MME
+	url = https://github.com/billzhao1030/VLN-MME.git
