@@ -27,6 +27,8 @@ DATASET_REPOS = (
 
 MODEL_REPOS = {
     "qwen2_5_vl": "Qwen/Qwen2.5-VL-7B-Instruct",
+    "qwen2_5_vl_3b": "Qwen/Qwen2.5-VL-3B-Instruct",
+    "qwen3_vl_4b": "Qwen/Qwen3-VL-4B-Instruct",
     "internvl3_2b": "OpenGVLab/InternVL3-2B",
 }
 
@@ -57,9 +59,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--models",
         nargs="+",
-        default=["qwen2_5_vl", "internvl3_2b"],
+        default=["qwen2_5_vl", "qwen2_5_vl_3b", "qwen3_vl_4b", "internvl3_2b"],
         choices=[*MODEL_REPOS.keys(), "all"],
-        help="Model weights to cache in HF_HOME. Default: qwen2_5_vl internvl3_2b.",
+        help=(
+            "Model weights to cache in HF_HOME. Default: qwen2_5_vl "
+            "qwen2_5_vl_3b qwen3_vl_4b internvl3_2b."
+        ),
     )
     parser.add_argument(
         "--endpoint",
