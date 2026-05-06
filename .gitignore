@@ -29,22 +29,8 @@ Thumbs.db
 # Logs
 *.log
 
-# Large data
-data/shared/matterport_scans/
-data/shared/connectivity/
-data/shared/features/
-data/shared/pretrained/
-data/shared/checkpoints/
-
-data/same/
-data/duet/
-data/navnuances/
-data/**
-!data/
-!data/.gitkeep
-!data/数据说明.md
-!data/same/
-!data/same/.gitkeep
+# Local data (kept outside the repo, often symlinked)
+/data
 
 # Runs / outputs
 runs/
