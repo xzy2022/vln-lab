@@ -18,6 +18,7 @@ DEFAULT_CONFIG = REPO_ROOT / "configs" / "vlnmme" / "r2r_internvl3_2b_tiny.yaml"
 DEFAULT_VLNMME_SRC = REPO_ROOT / "third_party" / "VLN-MME" / "src"
 R2R_TASK = "R2R"
 R2R_DATASET_NAME = "r2r"
+ENV_FALSE_VALUES = {"0", "false", "no", "off"}
 
 
 def parse_args() -> argparse.Namespace:
@@ -88,6 +89,24 @@ def write_yaml(path: Path, data: dict[str, Any]) -> None:
     with tmp_path.open("w", encoding="utf-8") as handle:
         yaml.safe_dump(data, handle, allow_unicode=True, sort_keys=False)
     tmp_path.replace(path)
+
+
+def hf_offline_enabled() -> bool:
+    return os.environ.get("VLNMME_HF_OFFLINE", "1").strip().lower() not in ENV_FALSE_VALUES
+
+
+def make_child_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env.setdefault("TRANSFORMERS_VERBOSITY", "error")
+    if hf_offline_enabled():
+        env["HF_HUB_OFFLINE"] = "1"
+        env["TRANSFORMERS_OFFLINE"] = "1"
+        env["HF_DATASETS_OFFLINE"] = "1"
+    else:
+        env.pop("HF_HUB_OFFLINE", None)
+        env.pop("TRANSFORMERS_OFFLINE", None)
+        env.pop("HF_DATASETS_OFFLINE", None)
+    return env
 
 
 def resolve_runtime_path(path_value: str, *, vlnmme_src: Path) -> Path:
@@ -365,13 +384,11 @@ def run_split(
         ),
     )
 
-    env = os.environ.copy()
-    env.setdefault("TRANSFORMERS_VERBOSITY", "error")
     return_code = stream_subprocess(
         [python_bin, "main.py", "--config_dir", str(temp_config_path)],
         cwd=vlnmme_src,
         log_path=resume_root / "logs" / f"{split}.stdout.log",
-        env=env,
+        env=make_child_env(),
     )
 
     merged_after, added_after = ordered_unique_results(
@@ -401,13 +418,11 @@ def run_score(
 ) -> None:
     score_config_path = resume_root / "configs" / "score_from_file.yaml"
     write_yaml(score_config_path, make_score_config(original_config))
-    env = os.environ.copy()
-    env.setdefault("TRANSFORMERS_VERBOSITY", "error")
     return_code = stream_subprocess(
         [python_bin, "main.py", "--config_dir", str(score_config_path)],
         cwd=vlnmme_src,
         log_path=resume_root / "logs" / "score_from_file.stdout.log",
-        env=env,
+        env=make_child_env(),
     )
     if return_code != 0:
         raise SystemExit(return_code)
@@ -424,6 +439,8 @@ def main() -> None:
         raise FileNotFoundError(f"Missing VLN-MME main.py under {repo_rel(vlnmme_src)}")
     if args.raw_items_per_run < 0:
         raise ValueError("--raw-items-per-run must be >= 0")
+    if hf_offline_enabled():
+        print("[resume] Hugging Face offline mode enabled (set VLNMME_HF_OFFLINE=0 to allow network)", flush=True)
 
     original_config = load_yaml(config_path)
     val_source = get_nested(original_config, "task", "val_source")
