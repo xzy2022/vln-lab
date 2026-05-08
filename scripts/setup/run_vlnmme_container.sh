@@ -32,8 +32,8 @@ case "${USE_HF_MIRROR}" in
     exit 1
     ;;
 esac
-# data/ 可能是指向大容量磁盘的软链接；这里解析为真实路径后再挂载给 Docker。
-DATA_HOST_DIR="$(realpath -m "${REPO_DIR}/data")"
+# data/ 可能是指向大容量磁盘的软链接；也可通过 DATA_HOST_DIR 覆盖为其他机器的真实数据路径。
+DATA_HOST_DIR="$(realpath -m "${DATA_HOST_DIR:-${REPO_DIR}/data}")"
 
 DEFAULT_HF_CACHE_DIR="$(realpath -m "${DATA_HOST_DIR}/.cache/huggingface")"
 HF_CACHE_DIR="$(realpath -m "${HF_CACHE_DIR:-${DEFAULT_HF_CACHE_DIR}}")"
@@ -147,6 +147,7 @@ print_container_summary() {
   else
     echo "HF cache: ${HF_CACHE_DIR} -> ${HF_CONTAINER_CACHE_DIR} (custom mount)"
   fi
+  echo "Data root: ${DATA_HOST_DIR} -> ${DATA_CONTAINER_DIR}"
   echo "VLN-MME data: ${VLNMME_HOST_DATA_DIR} -> ${VLNMME_CONTAINER_DATA_DIR}, ${VLNMME_UPSTREAM_DATA_DIR}"
   echo "Experiment outputs: ${EXPERIMENT_OUTPUTS_HOST_DIR} -> ${EXPERIMENT_OUTPUTS_CONTAINER_DIR}"
   echo "Wheels: ${WHEELS_HOST_DIR} -> ${WHEELS_CONTAINER_DIR}"

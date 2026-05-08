@@ -1,0 +1,23 @@
+experiment:
+  id: "vlnmme_qwen25vl_7b_navnuances_r2r_s0"
+  output_dir: "/workspace/vln-lab/experiment_outputs/vlnmme_qwen25vl_7b_navnuances_r2r_s0"
+  data_dir: "/workspace/vln-lab/data/navnuances/vlnmme"
+  seed: 0
+  model: "qwen2_5_vl"
+  valid_from_file: false
+  max_step: 15
+  batch_size: 1
+
+agent:
+  type: "baseline_agent"
+
+environment:
+  obs_dir: "../data/marked_obs"
+  caption_dir: "../data/MP3D/caption.json"
+  obs_sum_dir: "../data/MP3D/obs_summarized"
+  map_dir: null
+
+task:
+  val_source: ["R2R"]
+  eval_splits:
+    R2R: ["R2R_DC", "R2R_LR", "R2R_RR", "R2R_VM", "R2R_NU"]
