@@ -157,11 +157,12 @@ create_container() {
   echo "创建并启动容器 ${CONTAINER_NAME} ..."
   print_container_summary
 
-  docker run -it \
+  docker run -d \
     --name "${CONTAINER_NAME}" \
     --gpus all \
     --network host \
     --ipc=host \
+    --restart unless-stopped \
     --shm-size=16g \
     --ulimit memlock=-1 \
     --ulimit stack=67108864 \
@@ -169,7 +170,9 @@ create_container() {
     "${DOCKER_VOLUME_ARGS[@]}" \
     -w "${CONTAINER_WORKDIR}" \
     "${IMAGE_NAME}" \
-    bash
+    bash -lc "sleep infinity"
+
+  enter_existing_container
 }
 
 run_container() {
