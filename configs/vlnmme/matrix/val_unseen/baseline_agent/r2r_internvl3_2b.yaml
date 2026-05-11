@@ -1,0 +1,23 @@
+experiment:
+  id: "vlnmme_matrix_val_unseen_baseline_agent_r2r_internvl3_2b_s0"
+  output_dir: "/workspace/vln-lab/experiment_outputs/vlnmme_matrix/val_unseen/baseline_agent/r2r_internvl3_2b_s0"
+  data_dir: "../data"
+  seed: 0
+  model: "internvl3_2b"
+  valid_from_file: false
+  max_step: 15
+  batch_size: 1
+
+agent:
+  type: "baseline_agent"
+
+environment:
+  obs_dir: "../data/marked_obs"
+  caption_dir: "../data/MP3D/caption.json"
+  obs_sum_dir: "../data/MP3D/obs_summarized"
+  map_dir: null
+
+task:
+  val_source: ["R2R"]
+  eval_splits:
+    R2R: ["val_unseen"]
