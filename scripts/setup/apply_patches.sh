@@ -18,7 +18,7 @@ Apply all patch files under patches/<name>/base/.
 Options:
   --method <name>  Apply only the selected subproject. Can be repeated or use
                    a comma-separated list such as --method same,vln-duet.
-  --dry-run        Print the actions without executing git apply.
+  --dry-run        Print the actions without applying patches.
   -h, --help       Show this help message.
 
 If --method is omitted, the script applies base patches for every subproject
@@ -115,6 +115,38 @@ prepare_dry_run_target() {
     printf '%s\n' "${dry_run_target}"
 }
 
+is_git_target() {
+    local target_dir="$1"
+    git -C "${target_dir}" rev-parse --is-inside-work-tree >/dev/null 2>&1
+}
+
+apply_patch_file_without_git() {
+    local target_dir="$1"
+    local patch_file="$2"
+    local display_target_dir="${3:-$1}"
+    local rel_patch
+
+    rel_patch=${patch_file#"${REPO_DIR}/"}
+
+    if patch --dry-run -p1 -d "${target_dir}" < "${patch_file}" >/dev/null 2>&1; then
+        if (( DRY_RUN )); then
+            echo "[dry-run] apply ${rel_patch} -> ${display_target_dir} (patch fallback)"
+        else
+            patch -p1 -d "${target_dir}" < "${patch_file}" >/dev/null
+            echo "Applied ${rel_patch} -> ${display_target_dir} (patch fallback)"
+        fi
+        return 0
+    fi
+
+    if patch --dry-run -R -p1 -d "${target_dir}" < "${patch_file}" >/dev/null 2>&1; then
+        echo "Skipped ${rel_patch}: patch already applied in ${display_target_dir} (patch fallback)"
+        return 0
+    fi
+
+    echo "无法应用 patch: ${rel_patch} (target: ${display_target_dir})" >&2
+    return 1
+}
+
 apply_patch_file() {
     local target_dir="$1"
     local patch_file="$2"
@@ -122,6 +154,11 @@ apply_patch_file() {
     local rel_patch
 
     rel_patch=${patch_file#"${REPO_DIR}/"}
+
+    if ! is_git_target "${target_dir}"; then
+        apply_patch_file_without_git "${target_dir}" "${patch_file}" "${display_target_dir}"
+        return $?
+    fi
 
     if git -C "${target_dir}" apply --check "${patch_file}" >/dev/null 2>&1; then
         if (( DRY_RUN )); then
@@ -150,6 +187,10 @@ patch_stack_already_applied() {
     local expected_dir
     local actual_diff
     local expected_diff
+
+    if ! is_git_target "${target_dir}"; then
+        return 1
+    fi
 
     expected_dir=$(mktemp -d)
     if ! git clone --quiet --no-hardlinks "${target_dir}" "${expected_dir}" >/dev/null 2>&1; then
@@ -236,8 +277,10 @@ for method in "${METHODS[@]}"; do
     apply_dir="${target_dir}"
     dry_run_target_dir=""
     if (( DRY_RUN )); then
-        dry_run_target_dir=$(prepare_dry_run_target "${target_dir}")
-        apply_dir="${dry_run_target_dir}"
+        if is_git_target "${target_dir}"; then
+            dry_run_target_dir=$(prepare_dry_run_target "${target_dir}")
+            apply_dir="${dry_run_target_dir}"
+        fi
     fi
 
     for patch_file in "${patch_files[@]}"; do

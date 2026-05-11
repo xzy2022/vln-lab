@@ -18,7 +18,7 @@ Revert all patch files under patches/<name>/base/.
 Options:
   --method <name>  Revert only the selected subproject. Can be repeated or use
                    a comma-separated list such as --method same,vln-duet.
-  --dry-run        Print the actions without executing git apply --reverse.
+  --dry-run        Print the actions without reverting patches.
   -h, --help       Show this help message.
 
 If --method is omitted, the script reverts base patches for every subproject
@@ -115,6 +115,33 @@ prepare_dry_run_target() {
     printf '%s\n' "${dry_run_target}"
 }
 
+is_git_target() {
+    local target_dir="$1"
+    git -C "${target_dir}" rev-parse --is-inside-work-tree >/dev/null 2>&1
+}
+
+revert_patch_file_without_git() {
+    local target_dir="$1"
+    local patch_file="$2"
+    local display_target_dir="${3:-$1}"
+    local rel_patch
+
+    rel_patch=${patch_file#"${REPO_DIR}/"}
+
+    if patch --dry-run -R -p1 -d "${target_dir}" < "${patch_file}" >/dev/null 2>&1; then
+        if (( DRY_RUN )); then
+            echo "[dry-run] revert ${rel_patch} -> ${display_target_dir} (patch fallback)"
+        else
+            patch -R -p1 -d "${target_dir}" < "${patch_file}" >/dev/null
+            echo "Reverted ${rel_patch} -> ${display_target_dir} (patch fallback)"
+        fi
+        return 0
+    fi
+
+    echo "Skipped ${rel_patch}: patch is not currently reversible in ${display_target_dir} (patch fallback)"
+    return 0
+}
+
 revert_patch_file() {
     local target_dir="$1"
     local patch_file="$2"
@@ -122,6 +149,11 @@ revert_patch_file() {
     local rel_patch
 
     rel_patch=${patch_file#"${REPO_DIR}/"}
+
+    if ! is_git_target "${target_dir}"; then
+        revert_patch_file_without_git "${target_dir}" "${patch_file}" "${display_target_dir}"
+        return $?
+    fi
 
     if git -C "${target_dir}" apply --reverse --check --whitespace=nowarn "${patch_file}" >/dev/null 2>&1; then
         if (( DRY_RUN )); then
@@ -199,8 +231,10 @@ for method in "${METHODS[@]}"; do
     apply_dir="${target_dir}"
     dry_run_target_dir=""
     if (( DRY_RUN )); then
-        dry_run_target_dir=$(prepare_dry_run_target "${target_dir}")
-        apply_dir="${dry_run_target_dir}"
+        if is_git_target "${target_dir}"; then
+            dry_run_target_dir=$(prepare_dry_run_target "${target_dir}")
+            apply_dir="${dry_run_target_dir}"
+        fi
     fi
 
     for ((idx=${#patch_files[@]} - 1; idx >= 0; idx--)); do
