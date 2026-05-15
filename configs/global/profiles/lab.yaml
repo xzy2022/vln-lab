@@ -1,0 +1,4 @@
+external:
+  models:
+    container: /workspace/vln-lab/external/models
+    host: /data/share/

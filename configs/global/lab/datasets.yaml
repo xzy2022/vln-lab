@@ -1,0 +1,6 @@
+# configs/global/datasets.yaml
+datasets:
+  vlnmme:
+    root: /workspace/vln-lab/external/datasets/VLNMme
+    images: /workspace/vln-lab/external/datasets/VLNMme/images
+    annotations: /workspace/vln-lab/external/datasets/VLNMme/annotations

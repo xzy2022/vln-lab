@@ -1,0 +1,28 @@
+# configs/global/lab/paths.yaml
+project_root: /workspace/vln-lab
+
+mounts:
+  models:
+    host: /data/E/share/models
+    container: /workspace/vln-lab/external/models
+    mode: ro
+
+  datasets:
+    host: /data/E/share/datasets
+    container: /workspace/vln-lab/external/datasets
+    mode: ro
+
+  wheels:
+    host: /data/E/share/wheels
+    container: /workspace/vln-lab/external/wheels
+    mode: ro
+
+  hf_cache:
+    host: /data/E/data_ubuntu/vln-lab/data/hf_cache
+    container: /workspace/vln-lab/external/hf-cache
+    mode: rw
+
+  experiment_outputs:
+    host: /data/E/data_ubuntu/vln-lab/experiment_outputs
+    container: /workspace/vln-lab/experiment_outputs
+    mode: rw
