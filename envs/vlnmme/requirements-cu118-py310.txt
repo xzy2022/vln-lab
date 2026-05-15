@@ -1,8 +1,8 @@
 # ---- Qwen-VL utilities ----
-qwen-vl-utils[decord]==0.0.8
+qwen-vl-utils[decord]==0.0.14
 
 accelerate
-transformers==4.49.0
+transformers==4.57.1
 datasets
 google-genai
 gradio

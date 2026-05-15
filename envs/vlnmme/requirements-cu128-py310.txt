@@ -1,9 +1,9 @@
 # VLN-MME runtime dependencies.
 # torch / torchvision / torchaudio are installed separately with CUDA 12.8 wheels.
 
-qwen-vl-utils[decord]==0.0.8
+qwen-vl-utils[decord]==0.0.14
 accelerate
-transformers==4.49.0
+transformers==4.57.1
 datasets
 google-genai
 gradio
