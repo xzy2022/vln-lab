@@ -29,9 +29,14 @@ MODEL_REPOS = {
     "qwen2_5_vl": "Qwen/Qwen2.5-VL-7B-Instruct",
     "qwen2_5_vl_3b": "Qwen/Qwen2.5-VL-3B-Instruct",
     "qwen3_vl_4b": "Qwen/Qwen3-VL-4B-Instruct",
+    "qwen3_vl_8b": "Qwen/Qwen3-VL-8B-Instruct",
+    "qwen3_vl_8b_thinking": "Qwen/Qwen3-VL-8B-Thinking",
+    "qwen3_5_9b": "Qwen/Qwen3.5-9B",
+    "qwen3_5_4b": "Qwen/Qwen3.5-4B",
     "internvl3_2b": "OpenGVLab/InternVL3-2B",
 }
 
+DEFAULT_MODELS = ("qwen2_5_vl", "qwen2_5_vl_3b", "qwen3_vl_4b", "internvl3_2b")
 DIRECTIONS = ("left", "front", "right", "back")
 
 
@@ -59,11 +64,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--models",
         nargs="+",
-        default=["qwen2_5_vl", "qwen2_5_vl_3b", "qwen3_vl_4b", "internvl3_2b"],
+        default=list(DEFAULT_MODELS),
         choices=[*MODEL_REPOS.keys(), "all"],
         help=(
-            "Model weights to cache in HF_HOME. Default: qwen2_5_vl "
-            "qwen2_5_vl_3b qwen3_vl_4b internvl3_2b."
+            "Model weights to cache in HF_HOME. Default: "
+            f"{' '.join(DEFAULT_MODELS)}."
         ),
     )
     parser.add_argument(
@@ -80,8 +85,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-workers",
         type=int,
-        default=8,
-        help="Parallel workers for snapshot downloads.",
+        default=2,
+        help="Parallel workers for snapshot downloads. Default: 2.",
     )
     parser.add_argument("--skip-data", action="store_true", help="Skip annotations and MP3D files.")
     parser.add_argument("--skip-marked-obs", action="store_true", help="Skip marked observation PNGs.")
@@ -101,15 +106,23 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def require_hf_packages():
-    try:
-        from datasets import load_dataset  # noqa: F401
-        from huggingface_hub import HfApi, snapshot_download  # noqa: F401
-        from tqdm import tqdm  # noqa: F401
-    except ModuleNotFoundError as exc:
-        print(f"[error] Missing Python package: {exc.name}", file=sys.stderr)
+def require_hf_packages(args: argparse.Namespace) -> None:
+    required_modules = ["huggingface_hub"]
+    if not args.skip_marked_obs:
+        required_modules.extend(["datasets", "tqdm"])
+
+    missing: list[str] = []
+    for module_name in required_modules:
+        try:
+            __import__(module_name)
+        except ModuleNotFoundError as exc:
+            missing.append(exc.name)
+
+    if missing:
+        for name in dict.fromkeys(missing):
+            print(f"[error] Missing Python package: {name}", file=sys.stderr)
         print(
-            "[error] Activate the vlnmme environment first, then rerun this script.",
+            "[error] Activate an environment with the required packages, then rerun this script.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -119,6 +132,33 @@ def configure_endpoint(endpoint: str | None) -> str:
     if endpoint:
         os.environ["HF_ENDPOINT"] = endpoint.rstrip("/")
     return os.environ.get("HF_ENDPOINT", "https://huggingface.co").rstrip("/")
+
+
+def configure_cache_environment(cache_dir: Path | None, dry_run: bool) -> None:
+    os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+
+    if cache_dir is None or os.environ.get("HF_XET_CACHE"):
+        return
+
+    xet_cache = cache_dir / "xet"
+    os.environ["HF_XET_CACHE"] = str(xet_cache)
+    if not dry_run:
+        xet_cache.mkdir(parents=True, exist_ok=True)
+
+
+def ensure_writable_dir(path: Path, label: str, dry_run: bool) -> None:
+    if dry_run:
+        return
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(prefix=".write-test.", dir=path, delete=True):
+            pass
+    except OSError as exc:
+        raise SystemExit(
+            f"[error] {label} is not writable: {path}\n"
+            f"[error] {exc}\n"
+            "[error] Choose a writable --cache-dir or set HF_XET_CACHE to a writable path."
+        ) from exc
 
 
 def check_network(endpoint: str, timeout: int = 8) -> None:
@@ -313,16 +353,24 @@ def main() -> None:
     args = parse_args()
     endpoint = configure_endpoint(args.endpoint)
 
-    require_hf_packages()
-
     data_dir = args.data_dir.resolve()
     cache_dir = args.cache_dir.resolve() if args.cache_dir else None
+    configure_cache_environment(cache_dir, dry_run=args.dry_run)
+    if cache_dir is not None:
+        ensure_writable_dir(cache_dir, "--cache-dir", dry_run=args.dry_run)
+    if os.environ.get("HF_XET_CACHE"):
+        ensure_writable_dir(Path(os.environ["HF_XET_CACHE"]), "HF_XET_CACHE", dry_run=args.dry_run)
+
+    require_hf_packages(args)
 
     print("[plan] VLN-MME asset download")
     print(f"  data_dir: {data_dir}")
     print(f"  HF_HOME: {os.environ.get('HF_HOME') or 'unset'}")
+    print(f"  HF_XET_CACHE: {os.environ.get('HF_XET_CACHE') or 'unset'}")
+    print(f"  HF_HUB_DISABLE_XET: {os.environ.get('HF_HUB_DISABLE_XET') or 'unset'}")
     print(f"  HF_ENDPOINT: {endpoint}")
     print(f"  models: {', '.join(name for name, _ in selected_models(args.models))}")
+    print(f"  max_workers: {args.max_workers}")
     print(f"  dry_run: {args.dry_run}")
 
     if not args.no_network_check and not args.dry_run:
