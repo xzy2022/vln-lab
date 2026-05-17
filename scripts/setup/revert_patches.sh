@@ -90,6 +90,7 @@ prepare_dry_run_target() {
     local target_dir="$1"
     local dry_run_target
     local current_diff
+    local untracked_file
 
     dry_run_target=$(mktemp -d)
     current_diff=$(mktemp)
@@ -110,6 +111,12 @@ prepare_dry_run_target() {
             return 1
         fi
     fi
+
+    while IFS= read -r untracked_file; do
+        [[ -n "${untracked_file}" ]] || continue
+        mkdir -p "${dry_run_target}/$(dirname "${untracked_file}")"
+        cp -a "${target_dir}/${untracked_file}" "${dry_run_target}/${untracked_file}"
+    done < <(git -C "${target_dir}" ls-files --others --exclude-standard)
 
     rm -f "${current_diff}"
     printf '%s\n' "${dry_run_target}"
