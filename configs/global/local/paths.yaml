@@ -8,12 +8,12 @@ mounts:
     mode: ro
 
   datasets:
-    host: /data/E/share/datasets
+    host: /data/E/data_ubuntu/vln-lab/data
     container: /workspace/vln-lab/external/datasets
     mode: ro
 
   wheels:
-    host: /data/E/share/wheels
+    host: /home/xzy/data/wheels
     container: /workspace/vln-lab/external/wheels
     mode: ro
 

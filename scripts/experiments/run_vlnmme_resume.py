@@ -22,6 +22,7 @@ DEFAULT_VLNMME_SRC = REPO_ROOT / "third_party" / "VLN-MME" / "src"
 R2R_TASK = "R2R"
 R2R_DATASET_NAME = "r2r"
 ENV_FALSE_VALUES = {"0", "false", "no", "off"}
+DEFAULT_CONTAINER_HF_CACHE = Path("/workspace/vln-lab/external/hf-cache")
 
 
 def parse_args() -> argparse.Namespace:
@@ -130,6 +131,9 @@ def parse_gpu_list(value: str) -> list[str]:
 def make_child_env(*, cuda_visible_devices: str | None = None) -> dict[str, str]:
     env = os.environ.copy()
     env.setdefault("TRANSFORMERS_VERBOSITY", "error")
+    if DEFAULT_CONTAINER_HF_CACHE.exists():
+        env.setdefault("HF_HOME", str(DEFAULT_CONTAINER_HF_CACHE))
+        env.setdefault("HF_HUB_CACHE", str(DEFAULT_CONTAINER_HF_CACHE))
     if cuda_visible_devices is not None:
         env.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
         env["CUDA_VISIBLE_DEVICES"] = cuda_visible_devices
@@ -459,6 +463,8 @@ def resolve_source_data_path(data_dir: Path, split: str, *, original_data_dir: s
             candidates.append(REPO_ROOT / rel_to_workspace / R2R_TASK / f"{split}_enc.json")
     else:
         candidates.append(REPO_ROOT / "data" / "vlnmme" / R2R_TASK / f"{split}_enc.json")
+        candidates.append(REPO_ROOT / "external" / "datasets" / "vlnmme" / R2R_TASK / f"{split}_enc.json")
+        candidates.append(REPO_ROOT / "external" / "datasets" / R2R_TASK / f"{split}_enc.json")
 
     for candidate in candidates:
         if candidate.exists():
