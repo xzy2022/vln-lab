@@ -8,6 +8,10 @@ models:
     root: models
     relpath: Qwen3.5-VL-8B-Thinking
 
+  qwen3_5_0_8b:
+    root: models
+    relpath: Qwen3.5-0.8B
+
   qwen3_5_4b:
     root: models
     relpath: Qwen3.5-4B

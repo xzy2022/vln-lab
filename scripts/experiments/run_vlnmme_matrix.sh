@@ -10,6 +10,21 @@ LOG_ROOT="${VLNMME_MATRIX_LOG_ROOT:-${REPO_DIR}/experiment_outputs/vlnmme_matrix
 RUN_ID="${VLNMME_MATRIX_RUN_ID:-$(date +%Y%m%d_%H%M%S)}"
 RUN_LOG_DIR="${LOG_ROOT}/${RUN_ID}"
 SUMMARY_PATH="${RUN_LOG_DIR}/summary.tsv"
+PYTHON_BIN="${PYTHON_BIN:-}"
+
+if [[ -z "${PYTHON_BIN}" ]]; then
+  if [[ -x "/opt/conda/envs/vlnmme/bin/python" ]]; then
+    PYTHON_BIN="/opt/conda/envs/vlnmme/bin/python"
+  elif command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="python3"
+  elif command -v python >/dev/null 2>&1; then
+    PYTHON_BIN="python"
+  else
+    echo "[matrix] error: neither python3 nor python was found in PATH." >&2
+    exit 2
+  fi
+fi
+export PYTHON_BIN
 
 DATASETS=(
   "val_unseen"
@@ -25,7 +40,49 @@ MODELS=(
   "r2r_qwen25vl_7b"
   "r2r_qwen25vl_3b"
   "r2r_qwen3vl_4b"
+  "r2r_qwen35_0_8b"
+  "r2r_qwen35_4b"
+  "r2r_qwen35_9b"
+  "r2r_qwen3vl_8b_instruct"
+  "r2r_qwen3vl_8b_thinking"
   "r2r_internvl3_2b"
+)
+
+csv_env_to_array() {
+  local value="$1"
+  local -n output="$2"
+  local item
+  local -a parsed=()
+
+  IFS=',' read -r -a parsed <<< "${value}"
+  output=()
+  for item in "${parsed[@]}"; do
+    item="${item//[[:space:]]/}"
+    [[ -n "${item}" ]] || continue
+    output+=("${item}")
+  done
+}
+
+if [[ -n "${VLNMME_MATRIX_DATASETS:-}" ]]; then
+  csv_env_to_array "${VLNMME_MATRIX_DATASETS}" DATASETS
+fi
+if [[ -n "${VLNMME_MATRIX_AGENTS:-}" ]]; then
+  csv_env_to_array "${VLNMME_MATRIX_AGENTS}" AGENTS
+fi
+if [[ -n "${VLNMME_MATRIX_MODELS:-}" ]]; then
+  csv_env_to_array "${VLNMME_MATRIX_MODELS}" MODELS
+fi
+
+declare -A MODEL_KEYS=(
+  ["r2r_qwen25vl_7b"]="qwen2_5_vl"
+  ["r2r_qwen25vl_3b"]="qwen2_5_vl_3b"
+  ["r2r_qwen3vl_4b"]="qwen3_vl_4b"
+  ["r2r_qwen35_0_8b"]="qwen3_5_0_8b"
+  ["r2r_qwen35_4b"]="qwen3_5_4b"
+  ["r2r_qwen35_9b"]="qwen3_5_9b"
+  ["r2r_qwen3vl_8b_instruct"]="qwen3_vl_8b_instruct"
+  ["r2r_qwen3vl_8b_thinking"]="qwen3_vl_8b_thinking"
+  ["r2r_internvl3_2b"]="internvl3_2b"
 )
 
 has_arg() {
@@ -50,6 +107,82 @@ task_log_path() {
   local agent="$2"
   local model="$3"
   printf '%s/%s/%s/%s.log' "${RUN_LOG_DIR}" "${dataset}" "${agent}" "${model}"
+}
+
+config_path_for() {
+  local dataset="$1"
+  local agent="$2"
+  local model="$3"
+  printf '%s/configs/%s/%s/%s.yaml' "${RUN_LOG_DIR}" "${dataset}" "${agent}" "${model}"
+}
+
+base_config_path_for() {
+  local dataset="$1"
+  local agent="$2"
+  local model="$3"
+
+  case "${model}" in
+    r2r_qwen35_0_8b|r2r_qwen35_4b|r2r_qwen35_9b)
+      printf '%s/configs/vlnmme/matrix/%s/%s/r2r_qwen25vl_7b.yaml' "${REPO_DIR}" "${dataset}" "${agent}"
+      ;;
+    r2r_qwen3vl_8b_instruct|r2r_qwen3vl_8b_thinking)
+      printf '%s/configs/vlnmme/matrix/%s/%s/r2r_qwen3vl_4b.yaml' "${REPO_DIR}" "${dataset}" "${agent}"
+      ;;
+    *)
+      printf '%s/configs/vlnmme/matrix/%s/%s/%s.yaml' "${REPO_DIR}" "${dataset}" "${agent}" "${model}"
+      ;;
+  esac
+}
+
+write_config_for() {
+  local dataset="$1"
+  local agent="$2"
+  local model="$3"
+  local config_path="$4"
+  local base_config_path
+  local model_key
+
+  base_config_path="$(base_config_path_for "${dataset}" "${agent}" "${model}")"
+  model_key="${MODEL_KEYS[${model}]:-}"
+
+  if [[ -z "${model_key}" ]]; then
+    echo "[matrix] error: no VLN-MME model key registered for matrix model ${model}" >&2
+    return 2
+  fi
+  if [[ ! -f "${base_config_path}" ]]; then
+    echo "[matrix] error: missing base config for ${model}: ${base_config_path}" >&2
+    return 2
+  fi
+
+  mkdir -p "$(dirname "${config_path}")"
+  "${PYTHON_BIN}" - "${base_config_path}" "${config_path}" "${dataset}" "${agent}" "${model}" "${model_key}" <<'PY'
+import sys
+from pathlib import Path
+
+import yaml
+
+base_path = Path(sys.argv[1])
+out_path = Path(sys.argv[2])
+dataset, agent, model, model_key = sys.argv[3:7]
+
+with base_path.open("r", encoding="utf-8") as handle:
+    config = yaml.safe_load(handle)
+
+config["experiment"]["id"] = f"vlnmme_matrix_{dataset}_{agent}_{model}_s0"
+config["experiment"]["output_dir"] = f"/workspace/vln-lab/experiment_outputs/vlnmme_matrix/{dataset}/{agent}/{model}_s0"
+config["experiment"]["model"] = model_key
+config["agent"]["type"] = agent
+if Path("/workspace/vln-lab/external/datasets/vlnmme").exists():
+    config["experiment"]["data_dir"] = "/workspace/vln-lab/external/datasets/vlnmme"
+    config.setdefault("environment", {})
+    config["environment"]["obs_dir"] = "/workspace/vln-lab/external/datasets/vlnmme/marked_obs"
+    config["environment"]["caption_dir"] = "/workspace/vln-lab/external/datasets/vlnmme/MP3D/caption.json"
+    config["environment"]["obs_sum_dir"] = "/workspace/vln-lab/external/datasets/vlnmme/MP3D/obs_summarized"
+
+out_path.parent.mkdir(parents=True, exist_ok=True)
+with out_path.open("w", encoding="utf-8") as handle:
+    yaml.safe_dump(config, handle, allow_unicode=True, sort_keys=False)
+PY
 }
 
 if has_arg "--config" "$@"; then
@@ -83,14 +216,14 @@ for dataset in "${DATASETS[@]}"; do
   for agent in "${AGENTS[@]}"; do
     for model in "${MODELS[@]}"; do
       index=$((index + 1))
-      config_path="${REPO_DIR}/configs/vlnmme/matrix/${dataset}/${agent}/${model}.yaml"
+      config_path="$(config_path_for "${dataset}" "${agent}" "${model}")"
       log_path="$(task_log_path "${dataset}" "${agent}" "${model}")"
       mkdir -p "$(dirname "${log_path}")"
 
-      if [[ ! -f "${config_path}" ]]; then
-        echo "[matrix] missing config (${index}/${total}): ${config_path}" >&2
+      if ! write_config_for "${dataset}" "${agent}" "${model}" "${config_path}"; then
+        echo "[matrix] failed to prepare config (${index}/${total}): ${config_path}" >&2
         printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-          "${index}" "${total}" "${dataset}" "${agent}" "${model}" "missing_config" \
+          "${index}" "${total}" "${dataset}" "${agent}" "${model}" "config_error" \
           "" "" "0" "00:00:00" "${config_path}" "${log_path}" >> "${SUMMARY_PATH}"
         exit 2
       fi
