@@ -1,0 +1,391 @@
+diff --git a/src/models/__init__.py b/src/models/__init__.py
+index 2ac4553..d187f4c 100644
+--- a/src/models/__init__.py
++++ b/src/models/__init__.py
+@@ -1,6 +1,13 @@
+ 
+ AVAILABLE_MODELS = {
+     "qwen2_5_vl": "Qwen2_5_VL",
++    "qwen2_5_vl_3b": "Qwen2_5_VL_3B",
++    "qwen3_5_0_8b": "Qwen3_5_0_8B",
++    "qwen3_5_4b": "Qwen3_5_4B",
++    "qwen3_5_9b": "Qwen3_5_9B",
++    "qwen3_vl_4b": "Qwen3_VL_4B",
++    "qwen3_vl_8b_instruct": "Qwen3_VL_8B_Instruct",
++    "qwen3_vl_8b_thinking": "Qwen3_VL_8B_Thinking",
+     "llava_onevision": "Llava_OneVision",
+     "internvl3_2b": "InternVL3_2B",
+     "internvl3_8b": "InternVL3_8B",
+@@ -23,4 +30,4 @@ def get_models(model_name, logger):
+         return getattr(module, model_class)
+     except Exception as e:
+         logger.error(f"Failed to import {model_class} from {model_name}: {e}")
+-        raise
+\ No newline at end of file
++        raise
+diff --git a/src/models/qwen2_5_vl.py b/src/models/qwen2_5_vl.py
+index 8caa0d7..1d108e9 100644
+--- a/src/models/qwen2_5_vl.py
++++ b/src/models/qwen2_5_vl.py
+@@ -6,6 +6,9 @@ from qwen_vl_utils import process_vision_info
+ from models.base_mllm import BaseMLLM
+ 
+ class Qwen2_5_VL(BaseMLLM):
++    model_name = "Qwen/Qwen2.5-VL-7B-Instruct"
++    model_class = Qwen2_5_VLForConditionalGeneration
++
+     def __init__(
+         self,
+         num_beams: int = 1,
+@@ -16,21 +19,20 @@ class Qwen2_5_VL(BaseMLLM):
+         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+         print(f"Using device: {self.device}")
+ 
+-        # Load tokenizer, processor, and multimodal LLM checkpoint (Qwen2.5-VL)
+-        model_name = "Qwen/Qwen2.5-VL-7B-Instruct"
++        model_name = self.model_name
+         try:
+             self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+             self.processor = AutoProcessor.from_pretrained(model_name, use_fast=True)
+-            self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
++            self.model = self.model_class.from_pretrained(
+                 model_name,
+                 torch_dtype="auto",
+                 device_map="auto"
+             ).to(self.device)
+ 
+             self.model.eval() # Set model to evaluation mode
+-            print(f"Successfully loaded Qwen2.5-VL model: {model_name}")
++            print(f"Successfully loaded Qwen VL model: {model_name}")
+         except Exception as e:
+-            raise OSError(f"Failed to load Qwen2.5-VL model ({model_name}): {e}")
++            raise OSError(f"Failed to load Qwen VL model ({model_name}): {e}")
+ 
+         # Generation parameters
+         self.num_beams = num_beams
+@@ -86,4 +88,4 @@ class Qwen2_5_VL(BaseMLLM):
+             output_text = self.processor.batch_decode(
+                 generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+             )
+-            return output_text[0]
+\ No newline at end of file
++            return output_text[0]
+diff --git a/src/models/qwen2_5_vl_3b.py b/src/models/qwen2_5_vl_3b.py
+new file mode 100644
+index 0000000..3ec10a0
+--- /dev/null
++++ b/src/models/qwen2_5_vl_3b.py
+@@ -0,0 +1,5 @@
++from models.qwen2_5_vl import Qwen2_5_VL
++
++
++class Qwen2_5_VL_3B(Qwen2_5_VL):
++    model_name = "Qwen/Qwen2.5-VL-3B-Instruct"
+diff --git a/src/models/qwen3_5.py b/src/models/qwen3_5.py
+new file mode 100644
+index 0000000..ffdd133
+--- /dev/null
++++ b/src/models/qwen3_5.py
+@@ -0,0 +1,113 @@
++import json
++import os
++from pathlib import Path
++import torch
++from transformers import AutoModelForCausalLM, AutoTokenizer
++from typing import Any, Mapping
++
++from models.base_mllm import BaseMLLM
++
++
++class Qwen3_5(BaseMLLM):
++    model_name = "Qwen/Qwen3.5-4B"
++    local_model_dir = None
++
++    def __init__(
++        self,
++        max_length: int = 512,
++    ):
++        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
++        print(f"Using device: {self.device}")
++
++        model_name = self._resolve_model_name()
++        try:
++            self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
++            self.model = AutoModelForCausalLM.from_pretrained(
++                model_name,
++                torch_dtype="auto",
++                device_map="auto",
++                trust_remote_code=True,
++            )
++
++            self.model.eval()
++            print(f"Successfully loaded Qwen text model: {model_name}")
++        except Exception as e:
++            raise OSError(self._format_load_error(model_name, e))
++
++        self.max_length = max_length
++
++    def _resolve_model_name(self):
++        candidate_name = self.local_model_dir or self.model_name.rsplit("/", 1)[-1]
++        candidate_roots = [
++            os.environ.get("VLN_LAB_MODELS_DIR"),
++            "/workspace/vln-lab/external/models",
++            Path(__file__).resolve().parents[3] / "external" / "models",
++            "/data/E/share/models",
++        ]
++        for root in candidate_roots:
++            if not root:
++                continue
++            candidate = Path(root) / candidate_name
++            if candidate.exists():
++                return str(candidate)
++        return self.model_name
++
++    def _format_load_error(self, model_name, error):
++        detail = f"Failed to load Qwen text model ({model_name}): {error}"
++        config_path = Path(model_name) / "config.json"
++        if config_path.exists():
++            try:
++                model_type = json.loads(config_path.read_text(encoding="utf-8")).get("model_type")
++            except Exception:
++                model_type = None
++            if model_type == "qwen3_5":
++                detail += (
++                    "\nThis checkpoint uses model_type 'qwen3_5'. The current "
++                    "Transformers runtime must include Qwen3.5 support, or the "
++                    "model must be served via a compatible backend such as "
++                    "SGLang/vLLM and called through an API wrapper."
++                )
++        return detail
++
++    @property
++    def _identifying_params(self) -> Mapping[str, Any]:
++        return {
++            "ckpt": self.model.config._name_or_path,
++            "max_length": self.max_length,
++            "modality": "text",
++        }
++
++    def _construct_input(self, prompt: str):
++        if getattr(self.tokenizer, "chat_template", None):
++            messages = [
++                {
++                    "role": "user",
++                    "content": prompt,
++                }
++            ]
++            text = self.tokenizer.apply_chat_template(
++                messages,
++                tokenize=False,
++                add_generation_prompt=True,
++            )
++        else:
++            text = prompt
++        return self.tokenizer([text], return_tensors="pt").to(self.model.device)
++
++    def __call__(self, input: dict, prompt: str) -> str:
++        self.model.eval()
++        with torch.no_grad():
++            inputs = self._construct_input(prompt)
++            generated_ids = self.model.generate(
++                **inputs,
++                max_new_tokens=self.max_length,
++            )
++            generated_ids_trimmed = [
++                out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
++            ]
++            output_text = self.tokenizer.batch_decode(
++                generated_ids_trimmed,
++                skip_special_tokens=True,
++                clean_up_tokenization_spaces=False,
++            )
++            return output_text[0]
+diff --git a/src/models/qwen3_5_0_8b.py b/src/models/qwen3_5_0_8b.py
+new file mode 100644
+index 0000000..ade0946
+--- /dev/null
++++ b/src/models/qwen3_5_0_8b.py
+@@ -0,0 +1,6 @@
++from models.qwen3_5 import Qwen3_5
++
++
++class Qwen3_5_0_8B(Qwen3_5):
++    model_name = "Qwen/Qwen3.5-0.8B"
++    local_model_dir = "Qwen3.5-0.8B"
+diff --git a/src/models/qwen3_5_4b.py b/src/models/qwen3_5_4b.py
+new file mode 100644
+index 0000000..5fcb0c2
+--- /dev/null
++++ b/src/models/qwen3_5_4b.py
+@@ -0,0 +1,6 @@
++from models.qwen3_5 import Qwen3_5
++
++
++class Qwen3_5_4B(Qwen3_5):
++    model_name = "Qwen/Qwen3.5-4B"
++    local_model_dir = "Qwen3.5-4B"
+diff --git a/src/models/qwen3_5_9b.py b/src/models/qwen3_5_9b.py
+new file mode 100644
+index 0000000..623b143
+--- /dev/null
++++ b/src/models/qwen3_5_9b.py
+@@ -0,0 +1,6 @@
++from models.qwen3_5 import Qwen3_5
++
++
++class Qwen3_5_9B(Qwen3_5):
++    model_name = "Qwen/Qwen3.5-9B"
++    local_model_dir = "Qwen3.5-9B"
+diff --git a/src/models/qwen3_vl_4b.py b/src/models/qwen3_vl_4b.py
+new file mode 100644
+index 0000000..260b0c9
+--- /dev/null
++++ b/src/models/qwen3_vl_4b.py
+@@ -0,0 +1,8 @@
++from transformers import AutoModelForImageTextToText
++
++from models.qwen2_5_vl import Qwen2_5_VL
++
++
++class Qwen3_VL_4B(Qwen2_5_VL):
++    model_name = "Qwen/Qwen3-VL-4B-Instruct"
++    model_class = AutoModelForImageTextToText
+diff --git a/src/models/qwen3_vl_8b_instruct.py b/src/models/qwen3_vl_8b_instruct.py
+new file mode 100644
+index 0000000..5039c34
+--- /dev/null
++++ b/src/models/qwen3_vl_8b_instruct.py
+@@ -0,0 +1,8 @@
++from transformers import AutoModelForImageTextToText
++
++from models.qwen2_5_vl import Qwen2_5_VL
++
++
++class Qwen3_VL_8B_Instruct(Qwen2_5_VL):
++    model_name = "Qwen/Qwen3-VL-8B-Instruct"
++    model_class = AutoModelForImageTextToText
+diff --git a/src/models/qwen3_vl_8b_thinking.py b/src/models/qwen3_vl_8b_thinking.py
+new file mode 100644
+index 0000000..84f8f57
+--- /dev/null
++++ b/src/models/qwen3_vl_8b_thinking.py
+@@ -0,0 +1,8 @@
++from transformers import AutoModelForImageTextToText
++
++from models.qwen2_5_vl import Qwen2_5_VL
++
++
++class Qwen3_VL_8B_Thinking(Qwen2_5_VL):
++    model_name = "Qwen/Qwen3-VL-8B-Thinking"
++    model_class = AutoModelForImageTextToText
+diff --git a/src/runner/feature_db.py b/src/runner/feature_db.py
+index 9511d7d..ce01ceb 100644
+--- a/src/runner/feature_db.py
++++ b/src/runner/feature_db.py
+@@ -7,6 +7,11 @@ import matplotlib.pyplot as plt
+ 
+ from utils.data import download_marked_mp3d_observations, download_summary
+ 
++NAVIGABLE_PATHS = (
++    "../data/MP3D/navigable.json",
++    "/workspace/vln-lab/external/datasets/vlnmme/MP3D/navigable.json",
++)
++
+ class ImageObservationDB(object):
+     def __init__(
+         self, 
+@@ -20,6 +25,7 @@ class ImageObservationDB(object):
+         self.image_obs_sum_dir = img_obs_sum_dir
+         self.map_dir = map_dir
+         self._obs_store = {}
++        self._navigable = None
+ 
+         self.directions = ["left", "front", "right", "back"]
+ 
+@@ -76,8 +82,7 @@ class ImageObservationDB(object):
+         return self._obs_store[key]
+     
+     def map_caption_indices_to_viewpoints(self, scan, viewpoint):
+-        with open("../data/MP3D/navigable.json", 'r') as f:
+-            navigable = json.load(f)
++        navigable = self._load_navigable()
+ 
+         # Get the dictionary of navigable viewpoints for the given scan and viewpoint
+         navigable_points = navigable.get(scan, {}).get(viewpoint, {})
+@@ -91,8 +96,7 @@ class ImageObservationDB(object):
+         return caption_id_to_viewpoint
+     
+     def get_action_options(self, scan, viewpoint, caption, id_viewpoint, heading_deg):
+-        with open("../data/MP3D/navigable.json", 'r') as f:
+-            navigable = json.load(f)
++        navigable = self._load_navigable()
+ 
+         global_caption = [{}, {}, {}, {}]
+ 
+@@ -130,6 +134,16 @@ class ImageObservationDB(object):
+ 
+         return action_options
+ 
++    def _load_navigable(self):
++        if self._navigable is not None:
++            return self._navigable
++        for path in NAVIGABLE_PATHS:
++            if os.path.exists(path):
++                with open(path, 'r') as f:
++                    self._navigable = json.load(f)
++                return self._navigable
++        raise FileNotFoundError(f"Missing navigable.json in: {', '.join(NAVIGABLE_PATHS)}")
++
+ 
+     def display_four_images_with_heading(self, img_obs, heading_deg=0):
+         # Normalize heading to be within 0 to 359 degrees
+@@ -192,7 +206,7 @@ def create_observation_db(config, logger):
+ 
+     download_summary(logger)
+ 
+-    download_marked_mp3d_observations(logger)
++    download_marked_mp3d_observations(logger, save_dir=img_obs_dir)
+ 
+     return ImageObservationDB(
+         img_obs_dir, 
+@@ -200,4 +214,3 @@ def create_observation_db(config, logger):
+         img_obs_sum_dir, 
+         map_dir
+     )
+-
+diff --git a/src/utils/data.py b/src/utils/data.py
+index cfdd2e7..6f7ea47 100644
+--- a/src/utils/data.py
++++ b/src/utils/data.py
+@@ -18,6 +18,24 @@ def load_hub_data(repo_id, filename, extension="json", save_dir="../data"):
+     os.makedirs(save_dir, exist_ok=True)
+ 
+     file_path = f"{save_dir}/{filename}"
++    fallback_paths = [
++        os.path.join(
++            "/workspace/vln-lab/external/datasets/vlnmme",
++            os.path.relpath(file_path, "../data"),
++        )
++    ]
++    if repo_id.startswith("VLN-MME/"):
++        fallback_paths.append(
++            os.path.join(
++                "/workspace/vln-lab/external/datasets/vlnmme",
++                repo_id.split("/", 1)[1],
++                filename,
++            )
++        )
++    for fallback_path in fallback_paths:
++        if not os.path.exists(file_path) and os.path.exists(fallback_path):
++            file_path = fallback_path
++            break
+ 
+     if not os.path.exists(file_path):
+         print(f"{file_path} not exist, downloading from Hugging Face...")
+@@ -376,4 +394,4 @@ class OutputParserException(ValueError):
+                 )
+         self.observation = observation
+         self.llm_output = llm_output
+-        self.send_to_llm = send_to_llm
+\ No newline at end of file
++        self.send_to_llm = send_to_llm
