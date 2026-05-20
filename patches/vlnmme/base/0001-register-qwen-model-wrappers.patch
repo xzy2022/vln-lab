@@ -1,5 +1,5 @@
 diff --git a/src/models/__init__.py b/src/models/__init__.py
-index 2ac4553..d187f4c 100644
+index 2ac4553..36c4b95 100644
 --- a/src/models/__init__.py
 +++ b/src/models/__init__.py
 @@ -1,6 +1,13 @@
@@ -16,19 +16,245 @@ index 2ac4553..d187f4c 100644
      "llava_onevision": "Llava_OneVision",
      "internvl3_2b": "InternVL3_2B",
      "internvl3_8b": "InternVL3_8B",
-@@ -23,4 +30,4 @@ def get_models(model_name, logger):
-         return getattr(module, model_class)
+@@ -20,7 +27,9 @@ def get_models(model_name, logger):
+     try:
+         model_module, model_class = model_class.rsplit(".", 1)
+         module = __import__(model_module, fromlist=[model_class])
+-        return getattr(module, model_class)
++        model_type = getattr(module, model_class)
++        setattr(model_type, "_registry_model_key", model_name)
++        return model_type
      except Exception as e:
          logger.error(f"Failed to import {model_class} from {model_name}: {e}")
 -        raise
 \ No newline at end of file
 +        raise
+diff --git a/src/models/internvl3_2b.py b/src/models/internvl3_2b.py
+index bc6e603..264369a 100644
+--- a/src/models/internvl3_2b.py
++++ b/src/models/internvl3_2b.py
+@@ -7,17 +7,25 @@ import torch
+ import torchvision.transforms as T
+ from torchvision.transforms.functional import InterpolationMode
+ 
++from models.model_path_resolver import resolve_model_name_or_path
++
+ # pip install einops timm
+ IMAGENET_MEAN = (0.485, 0.456, 0.406)
+ IMAGENET_STD = (0.229, 0.224, 0.225)
+ 
+ class InternVL3_2B(BaseMLLM):
++    model_name = "OpenGVLab/InternVL3-2B"
++
+     def __init__(self, max_length: int = 512):
+         self.device = torch.device("cuda:0")
+         print(f"Using device: {self.device}")
+ 
++        model_name = self.model_name
+         try:
+-            model_name = "OpenGVLab/InternVL3-2B"
++            model_name = resolve_model_name_or_path(
++                self.model_name,
++                getattr(self.__class__, "_registry_model_key", None),
++            )
+ 
+             self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+             self.model = AutoModel.from_pretrained(
+diff --git a/src/models/internvl3_8b.py b/src/models/internvl3_8b.py
+index bde7cbf..54a8174 100644
+--- a/src/models/internvl3_8b.py
++++ b/src/models/internvl3_8b.py
+@@ -7,17 +7,25 @@ import torch
+ import torchvision.transforms as T
+ from torchvision.transforms.functional import InterpolationMode
+ 
++from models.model_path_resolver import resolve_model_name_or_path
++
+ # pip install einops timm
+ IMAGENET_MEAN = (0.485, 0.456, 0.406)
+ IMAGENET_STD = (0.229, 0.224, 0.225)
+ 
+ class InternVL3_8B(BaseMLLM):
++    model_name = "OpenGVLab/InternVL3-8B"
++
+     def __init__(self, max_length: int = 512):
+         self.device = torch.device("cuda:0")
+         print(f"Using device: {self.device}")
+ 
++        model_name = self.model_name
+         try:
+-            model_name = "OpenGVLab/InternVL3-8B"
++            model_name = resolve_model_name_or_path(
++                self.model_name,
++                getattr(self.__class__, "_registry_model_key", None),
++            )
+ 
+             self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+             self.model = AutoModel.from_pretrained(
+diff --git a/src/models/model_path_resolver.py b/src/models/model_path_resolver.py
+new file mode 100644
+index 0000000..71b2ecc
+--- /dev/null
++++ b/src/models/model_path_resolver.py
+@@ -0,0 +1,149 @@
++import os
++from dataclasses import dataclass
++from pathlib import Path
++from typing import Any
++
++import yaml
++
++
++def _discover_repo_root() -> Path:
++    current = Path(__file__).resolve()
++    for parent in current.parents:
++        if (parent / "configs" / "global").is_dir():
++            return parent
++    return current.parents[4]
++
++
++REPO_ROOT = _discover_repo_root()
++DEFAULT_GLOBAL_CONFIG_DIRS = (
++    REPO_ROOT / "configs" / "global" / "lab",
++    REPO_ROOT / "configs" / "global" / "local",
++)
++
++
++@dataclass(frozen=True)
++class ConfiguredModelPath:
++    model_key: str
++    path: Path
++    paths_config: Path
++    models_config: Path
++
++
++def _resolve_repo_path(path_value: str | Path) -> Path:
++    path = Path(path_value)
++    if path.is_absolute():
++        return path
++    return (REPO_ROOT / path).resolve(strict=False)
++
++
++def _load_yaml_mapping(path: Path) -> dict[str, Any]:
++    with path.open("r", encoding="utf-8") as handle:
++        data = yaml.safe_load(handle)
++    if not isinstance(data, dict):
++        raise ValueError(f"{path} must contain a YAML object")
++    return data
++
++
++def _resolve_mount_root(paths_config: Path, root_key: str, path_side: str) -> Path:
++    paths = _load_yaml_mapping(paths_config)
++
++    mounts = paths.get("mounts")
++    if not isinstance(mounts, dict):
++        raise ValueError(f"{paths_config} must contain a mounts mapping")
++
++    mount = mounts.get(root_key)
++    if not isinstance(mount, dict):
++        raise KeyError(f"{paths_config} has no mounts.{root_key}")
++
++    raw_root = mount.get(path_side)
++    if not raw_root:
++        raise KeyError(f"{paths_config} has no mounts.{root_key}.{path_side}")
++
++    root = Path(os.path.expandvars(os.path.expanduser(str(raw_root))))
++    if root.is_absolute():
++        return root
++
++    project_root = paths.get("project_root")
++    if not project_root:
++        raise KeyError(f"{paths_config} has no project_root")
++    return (Path(str(project_root)) / root).resolve(strict=False)
++
++
++def _iter_config_pairs():
++    global_config_dir = os.environ.get("VLN_LAB_GLOBAL_CONFIG_DIR")
++    explicit_paths_config = os.environ.get("VLN_LAB_PATHS_CONFIG")
++    explicit_models_config = os.environ.get("VLN_LAB_MODELS_CONFIG")
++
++    if explicit_paths_config or explicit_models_config:
++        paths_config = (
++            _resolve_repo_path(explicit_paths_config)
++            if explicit_paths_config
++            else _resolve_repo_path(Path(explicit_models_config).with_name("paths.yaml"))
++        )
++        models_config = (
++            _resolve_repo_path(explicit_models_config)
++            if explicit_models_config
++            else _resolve_repo_path(Path(explicit_paths_config).with_name("models.yaml"))
++        )
++        yield paths_config, models_config
++        return
++
++    if global_config_dir:
++        config_dir = _resolve_repo_path(global_config_dir)
++        yield config_dir / "paths.yaml", config_dir / "models.yaml"
++        return
++
++    for config_dir in DEFAULT_GLOBAL_CONFIG_DIRS:
++        yield config_dir / "paths.yaml", config_dir / "models.yaml"
++
++
++def resolve_configured_model_path(model_key: str | None) -> ConfiguredModelPath | None:
++    if not model_key:
++        return None
++
++    path_side = os.environ.get("VLN_LAB_PATH_SIDE", "container")
++
++    for paths_config, models_config in _iter_config_pairs():
++        if not paths_config.is_file() or not models_config.is_file():
++            continue
++
++        models_data = _load_yaml_mapping(models_config)
++        models = models_data.get("models")
++        if not isinstance(models, dict):
++            raise ValueError(f"{models_config} must contain a models mapping")
++
++        model = models.get(model_key)
++        if not isinstance(model, dict):
++            continue
++
++        root_key = model.get("root")
++        relpath = model.get("relpath")
++        if not root_key or not relpath:
++            raise KeyError(f"{models_config} models.{model_key} needs root and relpath")
++
++        relpath = Path(os.path.expandvars(os.path.expanduser(str(relpath))))
++        if relpath.is_absolute():
++            resolved_path = relpath
++        else:
++            resolved_path = _resolve_mount_root(paths_config, str(root_key), path_side) / relpath
++
++        return ConfiguredModelPath(
++            model_key=model_key,
++            path=resolved_path,
++            paths_config=paths_config,
++            models_config=models_config,
++        )
++
++    return None
++
++
++def resolve_model_name_or_path(model_name: str, model_key: str | None = None) -> str:
++    configured = resolve_configured_model_path(model_key)
++    if configured is None:
++        return model_name
++    if not configured.path.exists():
++        raise FileNotFoundError(
++            f"Configured path for model key '{configured.model_key}' does not exist: "
++            f"{configured.path} (from {configured.models_config})"
++        )
++    return str(configured.path)
 diff --git a/src/models/qwen2_5_vl.py b/src/models/qwen2_5_vl.py
-index 8caa0d7..1d108e9 100644
+index 8caa0d7..0693b6f 100644
 --- a/src/models/qwen2_5_vl.py
 +++ b/src/models/qwen2_5_vl.py
-@@ -6,6 +6,9 @@ from qwen_vl_utils import process_vision_info
+@@ -4,8 +4,12 @@ from typing import Any, Mapping
+ 
+ from qwen_vl_utils import process_vision_info
  from models.base_mllm import BaseMLLM
++from models.model_path_resolver import resolve_model_name_or_path
  
  class Qwen2_5_VL(BaseMLLM):
 +    model_name = "Qwen/Qwen2.5-VL-7B-Instruct"
@@ -37,7 +263,7 @@ index 8caa0d7..1d108e9 100644
      def __init__(
          self,
          num_beams: int = 1,
-@@ -16,21 +19,20 @@ class Qwen2_5_VL(BaseMLLM):
+@@ -16,27 +20,33 @@ class Qwen2_5_VL(BaseMLLM):
          self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
          print(f"Using device: {self.device}")
  
@@ -45,6 +271,7 @@ index 8caa0d7..1d108e9 100644
 -        model_name = "Qwen/Qwen2.5-VL-7B-Instruct"
 +        model_name = self.model_name
          try:
++            model_name = self._resolve_model_name()
              self.tokenizer = AutoTokenizer.from_pretrained(model_name)
              self.processor = AutoProcessor.from_pretrained(model_name, use_fast=True)
 -            self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
@@ -63,7 +290,19 @@ index 8caa0d7..1d108e9 100644
  
          # Generation parameters
          self.num_beams = num_beams
-@@ -86,4 +88,4 @@ class Qwen2_5_VL(BaseMLLM):
+         self.max_length = max_length
+         self.min_length = min_length
+ 
++    def _resolve_model_name(self):
++        return resolve_model_name_or_path(
++            self.model_name,
++            getattr(self.__class__, "_registry_model_key", None),
++        )
++
+     @property
+     def _identifying_params(self) -> Mapping[str, Any]:
+         return {
+@@ -86,4 +96,4 @@ class Qwen2_5_VL(BaseMLLM):
              output_text = self.processor.batch_decode(
                  generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
              )
@@ -83,23 +322,22 @@ index 0000000..3ec10a0
 +    model_name = "Qwen/Qwen2.5-VL-3B-Instruct"
 diff --git a/src/models/qwen3_5.py b/src/models/qwen3_5.py
 new file mode 100644
-index 0000000..ffdd133
+index 0000000..be30591
 --- /dev/null
 +++ b/src/models/qwen3_5.py
-@@ -0,0 +1,113 @@
+@@ -0,0 +1,103 @@
 +import json
-+import os
 +from pathlib import Path
 +import torch
 +from transformers import AutoModelForCausalLM, AutoTokenizer
 +from typing import Any, Mapping
 +
 +from models.base_mllm import BaseMLLM
++from models.model_path_resolver import resolve_model_name_or_path
 +
 +
 +class Qwen3_5(BaseMLLM):
 +    model_name = "Qwen/Qwen3.5-4B"
-+    local_model_dir = None
 +
 +    def __init__(
 +        self,
@@ -108,8 +346,9 @@ index 0000000..ffdd133
 +        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 +        print(f"Using device: {self.device}")
 +
-+        model_name = self._resolve_model_name()
++        model_name = self.model_name
 +        try:
++            model_name = self._resolve_model_name()
 +            self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 +            self.model = AutoModelForCausalLM.from_pretrained(
 +                model_name,
@@ -126,20 +365,10 @@ index 0000000..ffdd133
 +        self.max_length = max_length
 +
 +    def _resolve_model_name(self):
-+        candidate_name = self.local_model_dir or self.model_name.rsplit("/", 1)[-1]
-+        candidate_roots = [
-+            os.environ.get("VLN_LAB_MODELS_DIR"),
-+            "/workspace/vln-lab/external/models",
-+            Path(__file__).resolve().parents[3] / "external" / "models",
-+            "/data/E/share/models",
-+        ]
-+        for root in candidate_roots:
-+            if not root:
-+                continue
-+            candidate = Path(root) / candidate_name
-+            if candidate.exists():
-+                return str(candidate)
-+        return self.model_name
++        return resolve_model_name_or_path(
++            self.model_name,
++            getattr(self.__class__, "_registry_model_key", None),
++        )
 +
 +    def _format_load_error(self, model_name, error):
 +        detail = f"Failed to load Qwen text model ({model_name}): {error}"
@@ -202,40 +431,37 @@ index 0000000..ffdd133
 +            return output_text[0]
 diff --git a/src/models/qwen3_5_0_8b.py b/src/models/qwen3_5_0_8b.py
 new file mode 100644
-index 0000000..ade0946
+index 0000000..633b9db
 --- /dev/null
 +++ b/src/models/qwen3_5_0_8b.py
-@@ -0,0 +1,6 @@
+@@ -0,0 +1,5 @@
 +from models.qwen3_5 import Qwen3_5
 +
 +
 +class Qwen3_5_0_8B(Qwen3_5):
 +    model_name = "Qwen/Qwen3.5-0.8B"
-+    local_model_dir = "Qwen3.5-0.8B"
 diff --git a/src/models/qwen3_5_4b.py b/src/models/qwen3_5_4b.py
 new file mode 100644
-index 0000000..5fcb0c2
+index 0000000..ab9be27
 --- /dev/null
 +++ b/src/models/qwen3_5_4b.py
-@@ -0,0 +1,6 @@
+@@ -0,0 +1,5 @@
 +from models.qwen3_5 import Qwen3_5
 +
 +
 +class Qwen3_5_4B(Qwen3_5):
 +    model_name = "Qwen/Qwen3.5-4B"
-+    local_model_dir = "Qwen3.5-4B"
 diff --git a/src/models/qwen3_5_9b.py b/src/models/qwen3_5_9b.py
 new file mode 100644
-index 0000000..623b143
+index 0000000..454cd71
 --- /dev/null
 +++ b/src/models/qwen3_5_9b.py
-@@ -0,0 +1,6 @@
+@@ -0,0 +1,5 @@
 +from models.qwen3_5 import Qwen3_5
 +
 +
 +class Qwen3_5_9B(Qwen3_5):
 +    model_name = "Qwen/Qwen3.5-9B"
-+    local_model_dir = "Qwen3.5-9B"
 diff --git a/src/models/qwen3_vl_4b.py b/src/models/qwen3_vl_4b.py
 new file mode 100644
 index 0000000..260b0c9

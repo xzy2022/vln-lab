@@ -1,12 +1,28 @@
 # configs/global/models.yaml
 models:
+  qwen2_5_vl:
+    root: models
+    relpath: Qwen2.5-VL-7B-Instruct
+
+  qwen2_5_vl_3b:
+    root: models
+    relpath: Qwen2.5-VL-3B-Instruct
+
+  qwen3_vl_4b:
+    root: models
+    relpath: Qwen3-VL-4B-Instruct
+
   qwen3_vl_8b:
     root: models
-    relpath: Qwen3.5-VL-8B-Instruct
+    relpath: Qwen3-VL-8B-Instruct
+
+  qwen3_vl_8b_instruct:
+    root: models
+    relpath: Qwen3-VL-8B-Instruct
 
   qwen3_vl_8b_thinking:
     root: models
-    relpath: Qwen3.5-VL-8B-Thinking
+    relpath: Qwen3-VL-8B-Thinking
 
   qwen3_5_0_8b:
     root: models
@@ -19,3 +35,11 @@ models:
   qwen3_5_9b:
     root: models
     relpath: Qwen3.5-9B
+
+  internvl3_2b:
+    root: models
+    relpath: InternVL3-2B
+
+  internvl3_8b:
+    root: models
+    relpath: InternVL3-8B
