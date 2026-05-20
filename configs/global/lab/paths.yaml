@@ -8,8 +8,8 @@ mounts:
     mode: ro
 
   datasets:
-    host: /data/E/shared/datasets
-    container: /workspace/vln-lab/external/datasets
+    host: /data/xieziyang/data
+    container: /workspace/vln-lab/data
     mode: ro
 
   wheels:
